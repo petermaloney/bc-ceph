@@ -8,40 +8,24 @@
 
 # Think of a way to handle failures and keep track of what is sent and what is not
 
-#########################
-# config TODO: move to separate file
-#########################
-
-"""
-direction = "pull"
-
-#########
-# source
-#########
-src_cluster = "ceph"
-src_pool = "rbd"
-
-#######
-# dest
-#######
-dest_cluster = "ceph"
-"""
-
-#########################
-
 import datetime
 import socket
 import subprocess
 import sys
 import json
 import argparse
+import fcntl
+import os
+
 
 def log_error(message):
     print("ERROR: %s" % message)
 
+
 def log_debug(message):
     if debug:
         print("DEBUG: %s" % message)
+
 
 def log_info(message):
     print("INFO: %s" % message)
@@ -90,6 +74,8 @@ def read_file(fileobj):
     return ret
 
 def set_direction(host, args):
+    global src_host, dest_host
+    
     # it is expected that when direction+host means "me" the host/xxx_host values are None
     if direction == "pull" and host == src_host:
         args = ["ssh", host] + args
@@ -178,6 +164,8 @@ def rbd_create(image_path, size, host=None):
 
 # TODO: use set_direction(...) here
 def repl(snap_path, dest_image_path, prev_snap_name=None):
+    global src_host, dest_host
+    
     log_info("Starting replication for snap src \"%s\" prev snap \"%s\" dest \"%s\"" 
         % (snap_path, prev_snap_name, dest_image_path))
     
@@ -198,6 +186,7 @@ def repl(snap_path, dest_image_path, prev_snap_name=None):
     raise Exception("failed to export/import diff the stream, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
                     (snap_path, prev_snap_name, dest_image_path, read_file(p2.stderr)) )
 
+
 def do_import(config_file):
     if config_file.endswith(".py"):
         config_file = config_file[:len(config_file)-3]
@@ -210,26 +199,14 @@ def do_import(config_file):
     src_pool = cfg.src_pool
     dest_cluster = cfg.dest_cluster
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Perform Ceph RBD incremental replication using export-diff and import-diff.")
-    
-    parser.add_argument('--debug', dest='debug', action='store_const',
-                    const=True, default=False,
-                    help='enable debug level output')
-    parser.add_argument('-c', dest='config_file', action='store',
-                    type=str, default=None,
-                    help='Config file')
 
-    args = parser.parse_args()
-    global debug
-    debug = args.debug
-    
-    do_import(args.config_file)
-    
+def run():
     now = datetime.datetime.now(datetime.timezone.utc)
     nowstr = now.strftime("%Y-%m-%dT%H:%M:%S")
     snapname = "replication-%s" % nowstr
 
+    global subprocess_devnull, src_cluster, src_host, dest_host
+    
     if hasattr(subprocess, "DEVNULL"):
         subprocess_devnull = subprocess.DEVNULL
     else:
@@ -294,3 +271,35 @@ if __name__ == "__main__":
         # for some reason, I don't any more; rbd import-diff seems to do it.
         # Maybe only the first send required it?
         #dest_snap_create(dest_snap_path)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Perform Ceph RBD incremental replication using export-diff and import-diff.")
+    
+    parser.add_argument('--debug', dest='debug', action='store_const',
+                    const=True, default=False,
+                    help='enable debug level output')
+    parser.add_argument('-c', dest='config_file', action='store',
+                    type=str, required=True,
+                    help='Config file')
+
+    args = parser.parse_args()
+    global debug
+    debug = args.debug
+    
+    do_import(args.config_file)
+    
+    got_lock = False
+    lockFile = "/var/run/ceph_repl.lock"
+    try:
+        with open(lockFile, "wb") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                got_lock = True
+            except: # python3.4.x has BlockingIOError here, but python 3.2.x has IOError here... so just don't use those class names
+                print("Could not obtain lock; another process already running? quitting")
+                exit(1)
+            run()
+    finally:
+        if got_lock:
+            os.remove(lockFile)
