@@ -26,6 +26,7 @@ src_pool = "rbd"
 #######
 dest_cluster = "ceph"
 
+debug = True
 #########################
 
 import datetime
@@ -34,31 +35,25 @@ import subprocess
 import sys
 import json
 
-now = datetime.datetime.now(datetime.timezone.utc)
-nowstr = now.strftime("%Y-%m-%dT%H:%M:%S")
-snapname = "replication-%s" % nowstr
-
-if hasattr(subprocess, "DEVNULL"):
-    subprocess_devnull = subprocess.DEVNULL
-else:
-    # python 3.2.3 (Ubuntu 12.04) doesn't have DEVNULL... so use PIPE
-    subprocess_devnull = subprocess.PIPE
-
-
 def log_error(message):
     print("ERROR: %s" % message)
 
-
 def log_debug(message):
-    print("DEBUG: %s" % message)
+    if debug:
+        print("DEBUG: %s" % message)
 
+def log_info(message):
+    print("INFO: %s" % message)
+    
 
 def ssh_test(remote_host):
     p = subprocess.Popen(["ssh", remote_host, "hostname -s"], 
         stdout=subprocess_devnull, stderr=subprocess_devnull)
     p.wait()
+    
     if( p.returncode == 0 ):
         return True
+    
     return False
 
 
@@ -84,22 +79,13 @@ def findhost(remote_cluster):
     
     return remote_host
 
-if direction == "pull":
-    src_host = findhost(src_cluster)
-    dest_host = None
-else:
-    src_host = None
-    dest_host = findhost(dest_cluster)
-
-# destpool should be "backup-${src_cluster}-${src_pool}, eg. backup-ceph-rbd
-dest_pool = "backup-%s-%s" % (src_cluster, src_pool)
-
 def read_file(fileobj):
     ret = ""
     for line in fileobj:
         if type(line) != str:
             line = line.decode("utf-8")
         ret += line
+        
     return ret
 
 def set_direction(host, args):
@@ -114,6 +100,8 @@ def set_direction(host, args):
         args = ["ssh", host] + args
     else: 
         raise Exception("unexpected direction = %s, host = %s" % (direction, host))
+    
+    log_debug("host = %s, args = %s" % (host, args))
     return args
 
 
@@ -128,6 +116,7 @@ def get_images(pool, host=None):
             line = line.decode("utf-8").splitlines()[0]
             ret += [line]
         return ret
+    
     raise Exception("Failed to get list of rbd images:\n%s" % read_file(p.stderr))
 
 
@@ -138,6 +127,7 @@ def snap_create(snap_path, host=None):
     p.wait()
     if( p.returncode == 0 ):
         return
+    
     raise Exception("Failed to create snapshot \"%s\":\n%s" % (snap_path, read_file(p.stderr)))
 
 
@@ -150,7 +140,12 @@ def get_size(image_path, host=None):
     if( p.returncode == 0 ):
         o = json.loads( read_file(p.stdout) )
         size = o["size"]
-        return size/1024/1024
+        sizeMB = size/1024/1024
+        ret = int(sizeMB)
+        if sizeMB != ret:
+            raise Exception("Rounding error... sizeMB \"%s\" -> \"%s\" handling not implemented" % (sizeMB, ret))
+        return ret
+    
     raise Exception("Failed to get size of \"%s\":\n%s" % (image_path, read_file(p.stderr)))
 
 
@@ -170,51 +165,89 @@ def get_latest_snap(image_path, host=None):
     raise Exception("Failed to get latest snap of \"%s\":\n%s" % (image_path, read_file(p.stderr)))
 
 
-# TODO: handle prev_snap_name=None
+def rbd_create(image_path, size, host=None):
+    args = set_direction(host, ["rbd", "create", image_path, "--size", str(size)])
+    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p.wait()
+    if( p.returncode == 0 ):
+        return
+    
+    raise Exception("Failed to create destination image \"%s\" size \"%s\" MB:\n%s" % (image_path, size, read_file(p.stderr)))
+
+
+# TODO: use set_direction(...) here
 def repl(snap_path, dest_image_path, prev_snap_name=None):
-    print("Starting replication for snap src \"%s\" prev snap \"%s\" dest \"%s\"" 
+    log_info("Starting replication for snap src \"%s\" prev snap \"%s\" dest \"%s\"" 
         % (snap_path, prev_snap_name, dest_image_path))
-    args = ["rbd", "export-diff", "--from-snap", prev_snap_name, snap_path, "-"]
+    
+    args = ["rbd", "export-diff"]
+    if prev_snap_name:
+        args += ["--from-snap", prev_snap_name]
+    args += [snap_path, "-"]
+    args = set_direction(src_host, args)
     p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    args = ["rbd", "import-diff", "-", dest_image_path]
+    args = set_direction(dest_host, ["rbd", "import-diff", "-", dest_image_path])
     p2 = subprocess.Popen(args, stdin=p.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     
     p2.wait()
     if( p2.returncode == 0 ):
-        print("replication successful \"%s\" -> \"%s\"" % (snap_path, dest_image_path))
+        log_info("replication successful \"%s\" -> \"%s\"" % (snap_path, dest_image_path))
         return
-    raise Exception("failed to export/import diff the stream, src \"%s\" prev snap \"%s\" dest \"%s\"" % 
-                    (snap_path, prev_snap_name, dest_image_path) )
+    raise Exception("failed to export/import diff the stream, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
+                    (snap_path, prev_snap_name, dest_image_path, read_file(p2.stderr)) )
 
 
 if __name__ == "__main__":
+    now = datetime.datetime.now(datetime.timezone.utc)
+    nowstr = now.strftime("%Y-%m-%dT%H:%M:%S")
+    snapname = "replication-%s" % nowstr
+
+    if hasattr(subprocess, "DEVNULL"):
+        subprocess_devnull = subprocess.DEVNULL
+    else:
+        # python 3.2.3 (Ubuntu 12.04) doesn't have DEVNULL... so use PIPE
+        subprocess_devnull = subprocess.PIPE
+
+    if direction == "pull":
+        src_host = findhost(src_cluster)
+        dest_host = None
+    else:
+        src_host = None
+        dest_host = findhost(dest_cluster)
+
+    # destpool should be "backup-${src_cluster}-${src_pool}, eg. backup-ceph-rbd
+    dest_pool = "backup-%s-%s" % (src_cluster, src_pool)
+
     for image in get_images(src_pool, src_host):
         # TODO: do some better way of excluding things
         if image == "manjaro-bak":
             continue
         
-        snap_path = "%s/%s@%s" % (src_pool, image, snapname)
+        src_snap_path = "%s/%s@%s" % (src_pool, image, snapname)
+        dest_snap_path = "%s/%s@%s" % (dest_pool, image, snapname)
+        src_image_path = "%s/%s" % (src_pool, image)
+        dest_image_path = "%s/%s" % (dest_pool,image)
         
-        print("Making snapshot: %s" % snap_path)
-        snap_create(snap_path, src_host)
+        log_info("Making snapshot: %s" % src_snap_path)
+        snap_create(src_snap_path, src_host)
 
-        src_size = get_size(image, src_host)
+        src_size = get_size(src_image_path, src_host)
         
         try:
-            dest_size = get_size(image, dest_host)
+            dest_size = get_size(dest_image_path, dest_host)
         except:
             dest_size = None
 
-        #log_debug("src size = %s, dest size = %s" % (src_size, dest_size))
+        log_debug("src size = %s, dest size = %s" % (src_size, dest_size))
         
-        dest_image_path = "%s/%s" % (dest_pool,image)
-        if not dest_size: #TODO:::::: YOU ARE HERE *******************************************
+        if not dest_size:
             #TODO: save state meaning "write in progress"
-            repl(snap_path, dest_image_path)
+            rbd_create(dest_image_path, src_size, host=dest_host)
+            repl(src_snap_path, dest_image_path)
             
             # TODO: do I need dest_snap_create?
-            snap_create("%s/%s@%s" % (dest_pool, image, snapname), dest_host)
+            #snap_create(dest_snap_path)
         elif dest_size != src_size:
             log_error("ERROR: incremental mode but src and dest are different size... untested")
             exit(1)
@@ -223,17 +256,14 @@ if __name__ == "__main__":
             #TODO: save state meaning "write in progress"
             
             # figure out prev_snap_name
-            #prev_snap_name = dest_get_latest_snap("%s/%s" % (dest_pool, image))
-            prev_snap_name = get_latest_snap("%s/%s" % (dest_pool, image), dest_host)
+            prev_snap_name = get_latest_snap(dest_image_path, dest_host)
             
             #TODO: import-diff on dest
-            repl(snap_path, dest_image_path, prev_snap_name=prev_snap_name)
+            repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
 
         #TODO: send all snapshots in between too, not just the one made now?
         
         # when doing it in bash, it seemed that I needed this...
         # for some reason, I don't any more; rbd import-diff seems to do it.
         # Maybe only the first send required it?
-        #dest_snap_create("%s/%s@%s" % (dest_pool, image, snapname), dest_host)
-
-        print()
+        #dest_snap_create(dest_snap_path)
