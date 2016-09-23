@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
 # TODO: 
-# - to take advantage of the json parsing, use python
 # - use nice and ionice
-# - check for space on mons... it seems to use a bunch when doing export
 # - handle failure during import; we want some data saying that it started or finished, and if it is started and not finished, then rollback and retry previous rather than adding a new snapshot on top
 # - handle excludes/includes
+# - separate config
 
 # Think of a way to handle failures and keep track of what is sent and what is not
 
@@ -13,6 +12,7 @@
 # config TODO: move to separate file
 #########################
 
+"""
 direction = "pull"
 
 #########
@@ -25,8 +25,8 @@ src_pool = "rbd"
 # dest
 #######
 dest_cluster = "ceph"
+"""
 
-debug = True
 #########################
 
 import datetime
@@ -34,6 +34,7 @@ import socket
 import subprocess
 import sys
 import json
+import argparse
 
 def log_error(message):
     print("ERROR: %s" % message)
@@ -197,8 +198,34 @@ def repl(snap_path, dest_image_path, prev_snap_name=None):
     raise Exception("failed to export/import diff the stream, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
                     (snap_path, prev_snap_name, dest_image_path, read_file(p2.stderr)) )
 
+def do_import(config_file):
+    if config_file.endswith(".py"):
+        config_file = config_file[:len(config_file)-3]
+    cfg = __import__(config_file, globals(), locals())
+
+    global direction, src_cluster, src_pool, dest_cluster
+    
+    direction = cfg.direction
+    src_cluster = cfg.src_cluster
+    src_pool = cfg.src_pool
+    dest_cluster = cfg.dest_cluster
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Perform Ceph RBD incremental replication using export-diff and import-diff.")
+    
+    parser.add_argument('--debug', dest='debug', action='store_const',
+                    const=True, default=False,
+                    help='enable debug level output')
+    parser.add_argument('-c', dest='config_file', action='store',
+                    type=str, default=None,
+                    help='Config file')
+
+    args = parser.parse_args()
+    global debug
+    debug = args.debug
+    
+    do_import(args.config_file)
+    
     now = datetime.datetime.now(datetime.timezone.utc)
     nowstr = now.strftime("%Y-%m-%dT%H:%M:%S")
     snapname = "replication-%s" % nowstr
