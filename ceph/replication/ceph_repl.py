@@ -102,12 +102,23 @@ def read_file(fileobj):
         ret += line
     return ret
 
+def set_direction(host, args):
+    # it is expected that when direction+host means "me" the host/xxx_host values are None
+    if direction == "pull" and host == src_host:
+        args = ["ssh", host] + args
+    elif direction == "pull" and host == dest_host:
+        pass
+    elif direction == "push" and host == src_host:
+        pass
+    elif direction == "push" and host == dest_host:
+        args = ["ssh", host] + args
+    else: 
+        raise Exception("unexpected direction = %s, host = %s" % (direction, host))
+    return args
 
-def get_src_images(pool, host=None):
-    if host == None:
-        args = ["rbd", "ls", pool]
-    else:
-        args = ["ssh", host, "rbd", "ls", pool]
+
+def get_images(pool, host=None):
+    args = set_direction(host, ["rbd", "ls", pool])
 
     p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     p.wait()
@@ -121,10 +132,7 @@ def get_src_images(pool, host=None):
 
 
 def snap_create(snap_path, host=None):
-    if host == None:
-        args = ["rbd", "snap", "create", snap_path]
-    else:
-        args = ["ssh", host, "rbd", "snap", "create", snap_path]
+    args = set_direction(host, ["rbd", "snap", "create", snap_path])
 
     p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     p.wait()
@@ -133,26 +141,9 @@ def snap_create(snap_path, host=None):
     raise Exception("Failed to create snapshot \"%s\":\n%s" % (snap_path, read_file(p.stderr)))
 
 
-def src_snap_create(snap_path):
-    if direction == "pull":
-        return snap_create(snap_path, host=src_host)
-    else:
-        return snap_create(snap_path)
-
-
-def dest_snap_create(snap_path):
-    if direction == "pull":
-        return snap_create(snap_path)
-    else:
-        return snap_create(snap_path, host=dest_host)
-
-
 # return size in MiB (just like argument to rbd create --size ...)
 def get_size(image_path, host=None):
-    if host == None:
-        args = ["rbd", "info", image_path, "--format", "json"]
-    else:
-        args = ["ssh", host, "rbd", "info", image_path, "--format", "json"]
+    args = set_direction(host, ["rbd", "info", image_path, "--format", "json"])
         
     p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     p.wait()
@@ -163,65 +154,6 @@ def get_size(image_path, host=None):
     raise Exception("Failed to get size of \"%s\":\n%s" % (image_path, read_file(p.stderr)))
 
 
-def src_get_size(image_path):
-    if direction == "pull":
-        return get_size(image_path, host=src_host)
-    else:
-        return get_size(image_path)
-
-
-def dest_get_size(image_path):
-    if direction == "pull":
-        return get_size(image_path)
-    else:
-        return get_size(image_path, host=dest_host)
-
-###################### testing this code
-def Xget_latest_snap(image_path, host=None):
-    if host == None:
-        args = ["rbd", "snap", "ls", image_path, "--format", "json"]
-    else:
-        args = ["ssh", host, "rbd", "snap", "ls", image_path, "--format", "json"]
-        
-    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    p.wait()
-    if( p.returncode == 0 ):
-        o = json.loads( read_file(p.stdout) )
-
-        for obj in o:
-            pass
-        
-        return obj["name"]
-    
-    raise Exception("Failed to get latest snap of \"%s\":\n%s" % (image_path, read_file(p.stderr)))
-
-
-def Xsrc_get_latest_snap(image_path):
-    if direction == "pull":
-        return get_latest_snap(image_path, host=src_host)
-    else:
-        return get_latest_snap(image_path)
-
-
-def Xdest_get_latest_snap(image_path):
-    if direction == "pull":
-        return get_latest_snap(image_path)
-    else:
-        return get_latest_snap(image_path, host=dest_host)
-
-###################### with this alternative
-
-def set_direction(host, args):
-    if direction == "pull" and host == src_host:
-        args = ["ssh", host] + args
-    elif direction == "pull" and host == dest_host:
-        pass
-    elif direction == "push" and host == src_host:
-        pass
-    else: #push dest
-        args = ["ssh", host] + args
-    return args
-    
 def get_latest_snap(image_path, host=None):
     args = set_direction(host, ["rbd", "snap", "ls", image_path, "--format", "json"])
         
@@ -236,11 +168,6 @@ def get_latest_snap(image_path, host=None):
         return obj["name"]
     
     raise Exception("Failed to get latest snap of \"%s\":\n%s" % (image_path, read_file(p.stderr)))
-
-
-
-
-########################
 
 
 # TODO: handle prev_snap_name=None
@@ -261,51 +188,52 @@ def repl(snap_path, dest_image_path, prev_snap_name=None):
                     (snap_path, prev_snap_name, dest_image_path) )
 
 
-for image in get_src_images(src_pool):
-    # TODO: do some better way of excluding things
-    if image == "manjaro-bak":
-        continue
-    
-    snap_path = "%s/%s@%s" % (src_pool, image, snapname)
-    
-    print("Making snapshot: %s" % snap_path)
-    src_snap_create(snap_path)
-
-    src_size = src_get_size(image)
-    
-    try:
-        dest_size = src_get_size(image)
-    except:
-        dest_size = None
-
-    #log_debug("src size = %s, dest size = %s" % (src_size, dest_size))
-    
-    dest_image_path = "%s/%s" % (dest_pool,image)
-    if not dest_size: #TODO:::::: YOU ARE HERE *******************************************
-        #TODO: save state meaning "write in progress"
-        repl(snap_path, dest_image_path)
+if __name__ == "__main__":
+    for image in get_images(src_pool, src_host):
+        # TODO: do some better way of excluding things
+        if image == "manjaro-bak":
+            continue
         
-        # TODO: do I need dest_snap_create?
-        dest_snap_create("%s/%s@%s" % (dest_pool, image, snapname))
-    elif dest_size != src_size:
-        log_error("ERROR: incremental mode but src and dest are different size... untested")
-        exit(1)
-        # TODO: support growing, but not shrinking automatically ... or does import-diff already do this?
-    else:
-        #TODO: save state meaning "write in progress"
+        snap_path = "%s/%s@%s" % (src_pool, image, snapname)
         
-        # figure out prev_snap_name
-        #prev_snap_name = dest_get_latest_snap("%s/%s" % (dest_pool, image))
-        prev_snap_name = get_latest_snap("%s/%s" % (dest_pool, image), dest_host)
+        print("Making snapshot: %s" % snap_path)
+        snap_create(snap_path, src_host)
+
+        src_size = get_size(image, src_host)
         
-        #TODO: import-diff on dest
-        repl(snap_path, dest_image_path, prev_snap_name=prev_snap_name)
+        try:
+            dest_size = get_size(image, dest_host)
+        except:
+            dest_size = None
 
-    #TODO: send all snapshots in between too, not just the one made now?
-    
-    # when doing it in bash, it seemed that I needed this...
-    # for some reason, I don't any more; rbd import-diff seems to do it.
-    # Maybe only the first send required it?
-    #dest_snap_create("%s/%s@%s" % (dest_pool, image, snapname))
+        #log_debug("src size = %s, dest size = %s" % (src_size, dest_size))
+        
+        dest_image_path = "%s/%s" % (dest_pool,image)
+        if not dest_size: #TODO:::::: YOU ARE HERE *******************************************
+            #TODO: save state meaning "write in progress"
+            repl(snap_path, dest_image_path)
+            
+            # TODO: do I need dest_snap_create?
+            snap_create("%s/%s@%s" % (dest_pool, image, snapname), dest_host)
+        elif dest_size != src_size:
+            log_error("ERROR: incremental mode but src and dest are different size... untested")
+            exit(1)
+            # TODO: support growing, but not shrinking automatically ... or does import-diff already do this?
+        else:
+            #TODO: save state meaning "write in progress"
+            
+            # figure out prev_snap_name
+            #prev_snap_name = dest_get_latest_snap("%s/%s" % (dest_pool, image))
+            prev_snap_name = get_latest_snap("%s/%s" % (dest_pool, image), dest_host)
+            
+            #TODO: import-diff on dest
+            repl(snap_path, dest_image_path, prev_snap_name=prev_snap_name)
 
-    print()
+        #TODO: send all snapshots in between too, not just the one made now?
+        
+        # when doing it in bash, it seemed that I needed this...
+        # for some reason, I don't any more; rbd import-diff seems to do it.
+        # Maybe only the first send required it?
+        #dest_snap_create("%s/%s@%s" % (dest_pool, image, snapname), dest_host)
+
+        print()
