@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
-
-# TODO: 
-# - use nice and ionice
-# - handle failure during import; we want some data saying that it started or finished, and if it is started and not finished, then rollback and retry previous rather than adding a new snapshot on top
-# - handle excludes/includes
-# - separate config
-
-# Think of a way to handle failures and keep track of what is sent and what is not
+#
+# replicates Ceph RBD images between pools or clusters; intended to be run by cron.
 
 import datetime
 import socket
@@ -76,15 +70,17 @@ def read_file(fileobj):
 def set_direction(host, args):
     global src_host, dest_host
     
+    nice = ["ionice", "-c", "2", "-n", "7", "nice", "-n", "16"]
+    
     # it is expected that when direction+host means "me" the host/xxx_host values are None
     if direction == "pull" and host == src_host:
-        args = ["ssh", host] + args
+        args = ["ssh", host] + nice + args
     elif direction == "pull" and host == dest_host:
-        pass
+        args = nice + args
     elif direction == "push" and host == src_host:
-        pass
+        args = nice + args
     elif direction == "push" and host == dest_host:
-        args = ["ssh", host] + args
+        args = ["ssh", host] + nice + args
     else: 
         raise Exception("unexpected direction = %s, host = %s" % (direction, host))
     
@@ -162,7 +158,6 @@ def rbd_create(image_path, size, host=None):
     raise Exception("Failed to create destination image \"%s\" size \"%s\" MB:\n%s" % (image_path, size, read_file(p.stderr)))
 
 
-# TODO: use set_direction(...) here
 def repl(snap_path, dest_image_path, prev_snap_name=None):
     global src_host, dest_host
     
@@ -192,20 +187,20 @@ def do_import(config_file):
         config_file = config_file[:len(config_file)-3]
     cfg = __import__(config_file, globals(), locals())
 
-    global direction, src_cluster, src_pool, dest_cluster
+    global direction, src_cluster, src_pool, dest_cluster, image_excludes
     
     direction = cfg.direction
     src_cluster = cfg.src_cluster
     src_pool = cfg.src_pool
     dest_cluster = cfg.dest_cluster
-
+    image_excludes = cfg.image_excludes
 
 def run():
     now = datetime.datetime.now(datetime.timezone.utc)
     nowstr = now.strftime("%Y-%m-%dT%H:%M:%S")
     snapname = "replication-%s" % nowstr
 
-    global subprocess_devnull, src_cluster, src_host, dest_host
+    global subprocess_devnull, src_cluster, src_host, dest_host, image_excludes
     
     if hasattr(subprocess, "DEVNULL"):
         subprocess_devnull = subprocess.DEVNULL
@@ -224,8 +219,7 @@ def run():
     dest_pool = "backup-%s-%s" % (src_cluster, src_pool)
 
     for image in get_images(src_pool, src_host):
-        # TODO: do some better way of excluding things
-        if image == "manjaro-bak":
+        if image in image_excludes:
             continue
         
         src_snap_path = "%s/%s@%s" % (src_pool, image, snapname)
@@ -246,27 +240,14 @@ def run():
         log_debug("src size = %s, dest size = %s" % (src_size, dest_size))
         
         if not dest_size:
-            #TODO: save state meaning "write in progress"
             rbd_create(dest_image_path, src_size, host=dest_host)
             repl(src_snap_path, dest_image_path)
-            
-            # TODO: do I need dest_snap_create?
-            #snap_create(dest_snap_path)
-        elif dest_size != src_size:
-            log_error("ERROR: incremental mode but src and dest are different size... untested")
-            exit(1)
-            # TODO: support growing, but not shrinking automatically ... or does import-diff already do this?
         else:
-            #TODO: save state meaning "write in progress"
-            
             # figure out prev_snap_name
             prev_snap_name = get_latest_snap(dest_image_path, dest_host)
             
-            #TODO: import-diff on dest
             repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
 
-        #TODO: send all snapshots in between too, not just the one made now?
-        
         # when doing it in bash, it seemed that I needed this...
         # for some reason, I don't any more; rbd import-diff seems to do it.
         # Maybe only the first send required it?
