@@ -193,7 +193,10 @@ def do_import(config_file):
     src_cluster = cfg.src_cluster
     src_pool = cfg.src_pool
     dest_cluster = cfg.dest_cluster
-    image_excludes = cfg.image_excludes
+    try:
+        image_excludes = cfg.image_excludes
+    except:
+        image_excludes = []
 
 def run():
     now = datetime.datetime.now(datetime.timezone.utc)
