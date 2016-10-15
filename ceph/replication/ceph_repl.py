@@ -10,7 +10,7 @@ import json
 import argparse
 import fcntl
 import os
-
+import glob
 
 def log_error(message):
     print("ERROR: %s" % message)
@@ -68,18 +68,18 @@ def read_file(fileobj):
     return ret
 
 def set_direction(host, args):
-    global src_host, dest_host
+    global cfg
     
     nice = ["ionice", "-c", "2", "-n", "7", "nice", "-n", "16"]
     
     # it is expected that when direction+host means "me" the host/xxx_host values are None
-    if direction == "pull" and host == src_host:
+    if cfg.direction == "pull" and host == cfg.src_host:
         args = ["ssh", host] + nice + args
-    elif direction == "pull" and host == dest_host:
+    elif cfg.direction == "pull" and host == cfg.dest_host:
         args = nice + args
-    elif direction == "push" and host == src_host:
+    elif cfg.direction == "push" and host == cfg.src_host:
         args = nice + args
-    elif direction == "push" and host == dest_host:
+    elif cfg.direction == "push" and host == cfg.dest_host:
         args = ["ssh", host] + nice + args
     else: 
         raise Exception("unexpected direction = %s, host = %s" % (direction, host))
@@ -126,7 +126,8 @@ def get_size(image_path, host=None):
         sizeMB = size/1024/1024
         ret = int(sizeMB)
         if sizeMB != ret:
-            raise Exception("Rounding error... sizeMB \"%s\" -> \"%s\" handling not implemented" % (sizeMB, ret))
+            #raise Exception("Rounding error... sizeMB \"%s\" -> \"%s\" handling not implemented" % (sizeMB, ret))
+            ret+=1
         return ret
     
     raise Exception("Failed to get size of \"%s\":\n%s" % (image_path, read_file(p.stderr)))
@@ -159,7 +160,7 @@ def rbd_create(image_path, size, host=None):
 
 
 def repl(snap_path, dest_image_path, prev_snap_name=None):
-    global src_host, dest_host
+    global cfg
     
     log_info("Starting replication for snap src \"%s\" prev snap \"%s\" dest \"%s\"" 
         % (snap_path, prev_snap_name, dest_image_path))
@@ -168,12 +169,12 @@ def repl(snap_path, dest_image_path, prev_snap_name=None):
     if prev_snap_name:
         args += ["--from-snap", prev_snap_name]
     args += [snap_path, "-"]
-    args = set_direction(src_host, args)
+    args = set_direction(cfg.src_host, args)
     p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    args = set_direction(dest_host, ["rbd", "import-diff", "-", dest_image_path])
+    args = set_direction(cfg.dest_host, ["rbd", "import-diff", "-", dest_image_path])
     p2 = subprocess.Popen(args, stdin=p.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    
+
     p2.wait()
     if( p2.returncode == 0 ):
         log_info("replication successful \"%s\" -> \"%s\"" % (snap_path, dest_image_path))
@@ -181,29 +182,81 @@ def repl(snap_path, dest_image_path, prev_snap_name=None):
     raise Exception("failed to export/import diff the stream, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
                     (snap_path, prev_snap_name, dest_image_path, read_file(p2.stderr)) )
 
-
+def repl_to_directory(snap_path, dest_image_dir_path):
+    global cfg
+    
+    newest = None
+    prev_snap_name = None
+    
+    try:
+        newest = max(glob.iglob(dest_image_dir_path+"/replication*"), key=os.path.getctime)
+        if newest:
+            prev_snap_name = newest.split("/")[-1]
+    except:
+        pass
+    
+    log_info("Starting replication for snap src \"%s\" prev snap \"%s\" dest \"%s\"" 
+        % (snap_path, prev_snap_name, dest_image_dir_path))
+    
+    args = ["rbd", "export-diff"]
+    if prev_snap_name:
+        args += ["--from-snap", prev_snap_name]
+    args += [snap_path, "-"]
+    args = set_direction(cfg.src_host, args)
+    
+    #args = ["dd", "if=/dev/zero", "bs=1", "count=5533333"]
+    
+    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
+    
+    total=0 # temp test code
+    
+    snap_name = snap_path[ snap_path.index("@")+1: ]
+    
+    outfile = "%s/%s" % (dest_image_dir_path, snap_name)
+    #prefix dot prevents above glob from matching
+    outfiletmp = "%s/.%s.tmp" % (dest_image_dir_path, snap_name)
+    
+    with open(outfiletmp, "wb") as f:
+        buf = bytearray(1024*1024)
+        while True:
+            r = p.stdout.readinto(buf)
+            if not r:
+                break
+            
+            f.write(buf[0:r])
+            
+            total += r # temp test code
+            #print("read %s bytes" % r)
+            #print("total %s" % total)
+    os.rename(outfiletmp, outfile)
+    
 def do_import(config_file):
     if config_file.endswith(".py"):
         config_file = config_file[:len(config_file)-3]
+    global cfg
     cfg = __import__(config_file, globals(), locals())
-
-    global direction, src_cluster, src_pool, dest_cluster, image_excludes
     
-    direction = cfg.direction
-    src_cluster = cfg.src_cluster
-    src_pool = cfg.src_pool
-    dest_cluster = cfg.dest_cluster
     try:
-        image_excludes = cfg.image_excludes
+        cfg.dest_cluster
     except:
-        image_excludes = []
+        cfg.dest_cluster = None
+        
+    try:
+        cfg.dest_directory
+    except:
+        cfg.dest_directory = None
+    
+    try:
+        cfg.image_excludes
+    except:
+        cfg.image_excludes = []
 
 def run():
     now = datetime.datetime.now(datetime.timezone.utc)
     nowstr = now.strftime("%Y-%m-%dT%H:%M:%S")
     snapname = "replication-%s" % nowstr
 
-    global subprocess_devnull, src_cluster, src_host, dest_host, image_excludes
+    global subprocess_devnull, cfg
     
     if hasattr(subprocess, "DEVNULL"):
         subprocess_devnull = subprocess.DEVNULL
@@ -211,45 +264,54 @@ def run():
         # python 3.2.3 (Ubuntu 12.04) doesn't have DEVNULL... so use PIPE
         subprocess_devnull = subprocess.PIPE
 
-    if direction == "pull":
-        src_host = findhost(src_cluster)
-        dest_host = None
+    if cfg.direction == "pull":
+        cfg.src_host = findhost(cfg.src_cluster)
+        cfg.dest_host = None
     else:
-        src_host = None
-        dest_host = findhost(dest_cluster)
+        cfg.src_host = None
+        cfg.dest_host = findhost(dest_cluster)
 
-    # destpool should be "backup-${src_cluster}-${src_pool}, eg. backup-ceph-rbd
-    dest_pool = "backup-%s-%s" % (src_cluster, src_pool)
+    # destpool should be "backup-${cfg.src_cluster}-${cfg.src_pool}, eg. backup-ceph-rbd
+    dest_pool = "backup-%s-%s" % (cfg.src_cluster, cfg.src_pool)
 
-    for image in get_images(src_pool, src_host):
-        if image in image_excludes:
+    for image in get_images(cfg.src_pool, cfg.src_host):
+        if image in cfg.image_excludes:
             continue
         
-        src_snap_path = "%s/%s@%s" % (src_pool, image, snapname)
+        src_snap_path = "%s/%s@%s" % (cfg.src_pool, image, snapname)
         dest_snap_path = "%s/%s@%s" % (dest_pool, image, snapname)
-        src_image_path = "%s/%s" % (src_pool, image)
-        dest_image_path = "%s/%s" % (dest_pool,image)
+        src_image_path = "%s/%s" % (cfg.src_pool, image)
         
         log_info("Making snapshot: %s" % src_snap_path)
-        snap_create(src_snap_path, src_host)
+        snap_create(src_snap_path, cfg.src_host)
 
-        src_size = get_size(src_image_path, src_host)
-        
-        try:
-            dest_size = get_size(dest_image_path, dest_host)
-        except:
-            dest_size = None
+        src_size = get_size(src_image_path, cfg.src_host)
 
-        log_debug("src size = %s, dest size = %s" % (src_size, dest_size))
-        
-        if not dest_size:
-            rbd_create(dest_image_path, src_size, host=dest_host)
-            repl(src_snap_path, dest_image_path)
-        else:
-            # figure out prev_snap_name
-            prev_snap_name = get_latest_snap(dest_image_path, dest_host)
+        if cfg.dest_directory:
+            dest_image_path = os.path.join(cfg.dest_directory, cfg.src_pool, image)
             
-            repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
+            if not os.path.exists(dest_image_path):
+                os.makedirs(dest_image_path)
+            
+            repl_to_directory(src_snap_path, dest_image_path)
+        else:
+            dest_image_path = "%s/%s" % (dest_pool,image)
+            
+            try:
+                dest_size = get_size(dest_image_path, cfg.dest_host)
+            except:
+                dest_size = None
+
+            log_debug("src size = %s, dest size = %s" % (src_size, dest_size))
+            
+            if not dest_size:
+                rbd_create(dest_image_path, src_size, host=cfg.dest_host)
+                repl(src_snap_path, dest_image_path)
+            else:
+                # figure out prev_snap_name
+                prev_snap_name = get_latest_snap(dest_image_path, cfg.dest_host)
+                
+                repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
 
         # when doing it in bash, it seemed that I needed this...
         # for some reason, I don't any more; rbd import-diff seems to do it.
