@@ -44,33 +44,76 @@ def read_file(fileobj):
 
 
 # Returns a list of snapshot names
+#
+# TODO: for now we just support absolute path so we know it's a local dir rather than rbd path with ceph client... support more later maybe.
 def get_snaps(image_path):
-    args = ["rbd", "snap", "ls", image_path, "--format", "json"]
+    if image_path[0:1] == "/":
+        # file/directory storage
+        return sorted(os.listdir(image_path))
+    else:
+        args = ["rbd", "snap", "ls", image_path, "--format", "json"]
 
-    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    p.wait()
-    if( p.returncode == 0 ):
-        o = json.loads( read_file(p.stdout) )
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p.wait()
+        if( p.returncode == 0 ):
+            o = json.loads( read_file(p.stdout) )
 
-        names=[]
-        for obj in o:
-            names += [obj["name"]]
+            names=[]
+            for obj in o:
+                names += [obj["name"]]
 
-        # TODO: sort by date
-        return names
+            return sorted(names)
 
-    raise Exception("Failed to get latest snap of \"%s\":\n%s" % (image_path, read_file(p.stderr)))
+        raise Exception("Failed to list snaps of \"%s\":\n%s" % (image_path, read_file(p.stderr)))
 
+# just list all files, and then iterate until the snap_name is found, and return next one
+def get_next_snap(image_path, snap_name):
+    found = False
+    for n in sorted(os.listdir(image_path)):
+        print("        looking at \"%s\" and \"%s\"" % (n,snap_name))
+        if ".tmp" in n:
+            continue
+        if found:
+            return n
+        if n == snap_name:
+            found = True
+    
+# for rbd, this actually destroys snaps
+# for files, this uses the rbd merge-diff command
+def destroy_snap(image_path, snap_name):
+    if image_path[0:1] == "/":
+        # file/directory storage
+        snap_file = os.path.join(image_path, snap_name)
+        next_snap = get_next_snap(image_path, snap_name)
+        next_file = os.path.join(image_path, next_snap)
 
-def destroy_snap(snap_path):
-    args = ["rbd", "snap", "rm", snap_path]
+        log_debug("in destroy_snap()")
+        log_debug("    %s" % snap_file)
+        log_debug("    %s" % next_file)
+        
+        args = ["rbd", "merge-diff", snap_file, next_file, next_file+".tmp"]
 
-    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    p.wait()
-    if( p.returncode == 0 ):
-        return
+        log_debug("args = %s"%args)
+        
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p.wait()
+        if( p.returncode == 0 ):
+            os.rename(next_file+".tmp", next_file)
+            os.remove(snap_file)
+            return
 
-    raise Exception("Failed to get remove snap \"%s\":\n%s" % (snap_path, read_file(p.stderr)))
+        raise Exception("Failed to merge snap \"%s\" and \"%s\":\n%s" % (snap_file, next_file, read_file(p.stderr)))
+        
+    else:
+        snap_path = image_path + "@" + snap_name
+        args = ["rbd", "snap", "rm", snap_path]
+
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p.wait()
+        if( p.returncode == 0 ):
+            return
+
+        raise Exception("Failed to destroy snap \"%s\":\n%s" % (snap_path, read_file(p.stderr)))
 
 
 class Spec:
@@ -198,12 +241,13 @@ def rotate(image_path, spec):
         else:
             log_verbose("deleting snap \"%s\"" % snap)
             if not args.dry_run:
-                destroy_snap(image_path + "@" + snap)
+                destroy_snap(image_path, snap)
             count_deleted += 1
     log_info("kept %s and deleted %s snapshots" %(count_kept, count_deleted))
 
 def run(spec):
     for image_path in args.image_paths:
+        # TODO: support a path that is just a pool name without image names
         rotate(image_path, spec)
 
 
