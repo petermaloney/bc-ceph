@@ -241,6 +241,8 @@ def repl_to_directory(snap_path, dest_image_dir_path):
 def do_import(config_file):
     if config_file.endswith(".py"):
         config_file = config_file[:len(config_file)-3]
+    if "/" in config_file:
+        config_file = config_file.split("/")[-1]
     global cfg
     cfg = __import__(config_file, globals(), locals())
     
