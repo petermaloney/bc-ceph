@@ -228,7 +228,15 @@ def repl_to_directory(snap_path, dest_image_dir_path):
             total += r # temp test code
             #print("read %s bytes" % r)
             #print("total %s" % total)
-    os.rename(outfiletmp, outfile)
+
+    p.wait()
+    if( p.returncode == 0 ):
+        os.rename(outfiletmp, outfile)
+    else:
+        os.delete(outfiletmp)
+        raise Exception("failed to export-diff the stream or save the file, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
+                        (snap_path, prev_snap_name, outfiletmp, read_file(p.stderr)) )
+        
     
 def do_import(config_file):
     if config_file.endswith(".py"):
