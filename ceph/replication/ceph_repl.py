@@ -187,9 +187,15 @@ def repl_to_directory(snap_path, dest_image_dir_path):
     
     newest = None
     prev_snap_name = None
+
+    log_debug("repl_to_directory, snap_path = \"%s\" dest_image_dir_path = \"%s\"" 
+        % (snap_path, dest_image_dir_path))
     
     try:
-        newest = max(glob.iglob(dest_image_dir_path+"/replication*"), key=os.path.getctime)
+        newest = None
+        for snap in sorted(glob.iglob(dest_image_dir_path+"/replication*"), key=os.path.getctime):
+            if not snap.endswith(".tmp"):
+                newest = snap
         if newest:
             prev_snap_name = newest.split("/")[-1]
     except:
@@ -233,7 +239,7 @@ def repl_to_directory(snap_path, dest_image_dir_path):
     if( p.returncode == 0 ):
         os.rename(outfiletmp, outfile)
     else:
-        os.delete(outfiletmp)
+        os.remove(outfiletmp)
         raise Exception("failed to export-diff the stream or save the file, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
                         (snap_path, prev_snap_name, outfiletmp, read_file(p.stderr)) )
         
@@ -261,11 +267,13 @@ def do_import(config_file):
     except:
         cfg.image_excludes = []
 
-def run():
+def create_snap_name():
     now = datetime.datetime.now(datetime.timezone.utc)
     nowstr = now.strftime("%Y-%m-%dT%H:%M:%S")
     snapname = "replication-%s" % nowstr
-
+    return snapname
+    
+def run():
     global subprocess_devnull, cfg
     
     if hasattr(subprocess, "DEVNULL"):
@@ -287,6 +295,7 @@ def run():
     for image in get_images(cfg.src_pool, cfg.src_host):
         if image in cfg.image_excludes:
             continue
+        snapname = create_snap_name()
         
         src_snap_path = "%s/%s@%s" % (cfg.src_pool, image, snapname)
         dest_snap_path = "%s/%s@%s" % (dest_pool, image, snapname)
