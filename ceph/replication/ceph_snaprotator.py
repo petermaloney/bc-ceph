@@ -2,6 +2,8 @@
 #
 # rotates snapshots to keep only a certain number of daily,weekly,monthly ones.
 # the algorithm keeps the oldest snapshot in each period
+#
+# TODO: make it save a day's worth of hourly snapshots, and an hour's worth of 20min snapshots
 
 import datetime
 import subprocess
@@ -49,7 +51,14 @@ def read_file(fileobj):
 def get_snaps(image_path):
     if image_path[0:1] == "/":
         # file/directory storage
-        return sorted(os.listdir(image_path))
+        
+        ret = []
+        for snap in sorted(os.listdir(image_path)):
+            if ".tmp" in snap:
+                continue
+            ret += [snap]
+        
+        return ret
     else:
         args = ["rbd", "snap", "ls", image_path, "--format", "json"]
 
@@ -70,7 +79,7 @@ def get_snaps(image_path):
 def get_next_snap(image_path, snap_name):
     found = False
     for n in sorted(os.listdir(image_path)):
-        print("        looking at \"%s\" and \"%s\"" % (n,snap_name))
+        #log_debug("        looking at \"%s\" and \"%s\"" % (n,snap_name))
         if ".tmp" in n:
             continue
         if found:
@@ -85,6 +94,10 @@ def destroy_snap(image_path, snap_name):
         # file/directory storage
         snap_file = os.path.join(image_path, snap_name)
         next_snap = get_next_snap(image_path, snap_name)
+        
+        if not next_snap:
+            # we can't merge the last file, but we don't delete it either just in case there is a bug
+            return
         next_file = os.path.join(image_path, next_snap)
 
         log_debug("in destroy_snap()")
@@ -94,6 +107,7 @@ def destroy_snap(image_path, snap_name):
         args = ["rbd", "merge-diff", snap_file, next_file, next_file+".tmp"]
 
         log_debug("args = %s"%args)
+        log_info("merging %s and %s" % (snap_name, next_snap))
         
         p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         p.wait()
@@ -115,6 +129,77 @@ def destroy_snap(image_path, snap_name):
 
         raise Exception("Failed to destroy snap \"%s\":\n%s" % (snap_path, read_file(p.stderr)))
 
+
+def merge_snaps(image_path, group):
+    print("merging group %s into %s" % (group[0:-1], group[-1]))
+
+    p = None
+    
+    first_snap_file = os.path.join(image_path, group[0])
+    second_snap_file = os.path.join(image_path, group[1])
+    last_out = None
+    if len(group) == 2:
+        last_out = second_snap_file + ".tmp"
+        firstout = os.path.join(image_path, last_out)
+    else:
+        firstout = "-"
+    args = ["rbd", "merge-diff", first_snap_file, second_snap_file, firstout]
+    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    if len(group) > 3:
+        for snap_name in group[2:-1]:
+            snap_file = os.path.join(image_path, snap_name)
+            
+            args = ["rbd", "merge-diff", "-", snap_file, "-"]
+            p = subprocess.Popen(args, stdin=p.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    if len(group) > 2:
+        last_snap_file = os.path.join(image_path, group[-1])
+        last_out = os.path.join(image_path, last_snap_file+".tmp")
+        args = ["rbd", "merge-diff", "-", last_snap_file, last_out]
+        p = subprocess.Popen(args, stdin=p.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+    p.wait()
+    if( p.returncode == 0 ):
+        out_path = os.path.join(image_path, group[-1])
+        os.rename(last_out, out_path)
+        for snap_name in group[0:-1]:
+            snap_file = os.path.join(image_path, snap_name)
+            os.remove(snap_file)
+        return
+    raise Exception("Failed to merge snaps:\n%s" % (read_file(p.stderr)))
+
+def destroy_snaps(image_path, snaps):
+    if image_path[0:1] == "/":
+        # group together snaps, piping them all together in one operation
+        
+        log_debug("in destroy_snaps, image_path = %s, snaps = %s" % (image_path, snaps))
+        
+        group = []
+        for snap_name in snaps:
+            # for all the snap names, we look for next snap...
+            snap_file = os.path.join(image_path, snap_name)
+            next_snap = get_next_snap(image_path, snap_name)
+            
+            log_debug("snap_name = %s, next = %s, found = %s" % (snap_name, next_snap, next_snap in snaps))
+            
+            group += [snap_name]
+            if next_snap in snaps:
+                # if the next snap is in snaps, then we join it together with that one
+                pass
+            else:
+                # if the next snap is not in snaps, we keep it separate
+                if next_snap:
+                    group += [next_snap]
+                merge_snaps(image_path, group)
+                group = []
+            
+            
+    else:
+        for snap in snaps:
+            log_verbose("deleting snap \"%s\"" % snap)
+            destroy_snap(image_path, snap)
+    
 
 class Spec:
     def __init__(self, spec):
@@ -144,7 +229,10 @@ def rotate(image_path, spec):
 
     daydelta = datetime.timedelta(days=1)
 
+    latest_snap = None
+    count_total = 0
     for snap in get_snaps(image_path):
+        count_total += 1
         snapdate_str = snap[snap.find("-")+1:]
 
         snapdate = datetime.datetime.strptime(snapdate_str, "%Y-%m-%dT%H:%M:%S")
@@ -172,6 +260,7 @@ def rotate(image_path, spec):
             prevmonthly = snapdate
             maybekeepm += [snap]
 
+        latest_snap = snap
     keep = {}
 
     log_debug("Second pass... keep only a few candidates")
@@ -221,6 +310,10 @@ def rotate(image_path, spec):
 
         monthly -= 1
 
+    # in addition to the time based logic, we also always keep the last snap
+    if not latest_snap in keep:
+        keep[latest_snap] = "*"
+
     log_debug("count = %s" % len(keep))
 
     log_info("Done planning... keeping:")
@@ -230,25 +323,50 @@ def rotate(image_path, spec):
     for snap in od:
         log_info("%s - %s" % (snap, keep[snap]))
 
-    count_kept = 0
-    count_deleted = 0
+    count_keeping = 0
+    count_deleting = 0
+    snaps_to_destroy = []
     for snap in get_snaps(image_path):
         log_debug("snap = %s" % snap)
 
         if snap in keep:
             log_debug("Keeping %s - %s" % (snap, keep[snap]))
-            count_kept += 1
+            count_keeping += 1
         else:
-            log_verbose("deleting snap \"%s\"" % snap)
+            log_verbose("queueing deletion of snap \"%s\"" % snap)
             if not args.dry_run:
-                destroy_snap(image_path, snap)
-            count_deleted += 1
-    log_info("kept %s and deleted %s snapshots" %(count_kept, count_deleted))
+                snaps_to_destroy += [snap]
+            count_deleting += 1
+    log_info("keeping %s and deleting %s snapshots out of %s" %(count_keeping, count_deleting, count_total))
+    destroy_snaps(image_path, snaps_to_destroy)
+    
+def get_images(pool):
+    if pool[0:1] == "/":
+        return sorted(os.listdir(pool))
+    else:
+        args = ["rbd", "ls", pool]
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p.wait()
+        if( p.returncode == 0 ):
+            ret = []
+            for line in p.stdout:
+                line = line.decode("utf-8").splitlines()[0]
+                ret += [line]
+            return ret
+        
+        raise Exception("Failed to get list of rbd images in pool %s:\n%s" % (pool, read_file(p.stderr)))
+
 
 def run(spec):
     for image_path in args.image_paths:
-        # TODO: support a path that is just a pool name without image names
-        rotate(image_path, spec)
+        if image_path.endswith("/"):
+            for image in get_images(image_path[0:-1]):
+                log_info("rotating image %s" % image_path + image)
+                rotate(image_path + image, spec)
+                
+        else:
+            # an image name
+            rotate(image_path, spec)
 
 
 if __name__ == "__main__":
@@ -269,13 +387,13 @@ if __name__ == "__main__":
                     const=True, default="7,4,6",
                     help='comma separated daily, weekly, monthly counts to keep.')
     parser.add_argument('image_paths', metavar='image_paths', type=str, nargs='+',
-                    help='rbd image paths(s) to clean up, eg. rbd/vm-101-disk1')
+                    help='rbd image paths(s) to clean up, eg. rbd/vm-101-disk1, or pool name(s) with trailing slash, eg. rbd/')
 
     args = parser.parse_args()
     spec = Spec(args.spec)
 
     got_lock = False
-    lockFile = "/var/run/ceph_snaprotator.lock"
+    lockFile = "/var/run/ceph_repl.lock"
     try:
         with open(lockFile, "wb") as f:
             try:
