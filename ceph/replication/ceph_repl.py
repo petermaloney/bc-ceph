@@ -295,48 +295,45 @@ def run():
     for image in get_images(cfg.src_pool, cfg.src_host):
         if image in cfg.image_excludes:
             continue
-        snapname = create_snap_name()
-        
-        src_snap_path = "%s/%s@%s" % (cfg.src_pool, image, snapname)
-        dest_snap_path = "%s/%s@%s" % (dest_pool, image, snapname)
-        src_image_path = "%s/%s" % (cfg.src_pool, image)
-        
-        log_info("Making snapshot: %s" % src_snap_path)
-        snap_create(src_snap_path, cfg.src_host)
+        try: 
+            snapname = create_snap_name()
+            
+            src_snap_path = "%s/%s@%s" % (cfg.src_pool, image, snapname)
+            dest_snap_path = "%s/%s@%s" % (dest_pool, image, snapname)
+            src_image_path = "%s/%s" % (cfg.src_pool, image)
+            
+            log_info("Making snapshot: %s" % src_snap_path)
+            snap_create(src_snap_path, cfg.src_host)
 
-        src_size = get_size(src_image_path, cfg.src_host)
+            src_size = get_size(src_image_path, cfg.src_host)
 
-        if cfg.dest_directory:
-            dest_image_path = os.path.join(cfg.dest_directory, cfg.src_pool, image)
-            
-            if not os.path.exists(dest_image_path):
-                os.makedirs(dest_image_path)
-            
-            repl_to_directory(src_snap_path, dest_image_path)
-        else:
-            dest_image_path = "%s/%s" % (dest_pool,image)
-            
-            try:
-                dest_size = get_size(dest_image_path, cfg.dest_host)
-            except:
-                dest_size = None
-
-            log_debug("src size = %s, dest size = %s" % (src_size, dest_size))
-            
-            if not dest_size:
-                rbd_create(dest_image_path, src_size, host=cfg.dest_host)
-                repl(src_snap_path, dest_image_path)
-            else:
-                # figure out prev_snap_name
-                prev_snap_name = get_latest_snap(dest_image_path, cfg.dest_host)
+            if cfg.dest_directory:
+                dest_image_path = os.path.join(cfg.dest_directory, cfg.src_pool, image)
                 
-                repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
+                if not os.path.exists(dest_image_path):
+                    os.makedirs(dest_image_path)
+               
+                repl_to_directory(src_snap_path, dest_image_path)
+            else:
+                dest_image_path = "%s/%s" % (dest_pool,image)
+                
+                try:
+                    dest_size = get_size(dest_image_path, cfg.dest_host)
+                except:
+                    dest_size = None
 
-        # when doing it in bash, it seemed that I needed this...
-        # for some reason, I don't any more; rbd import-diff seems to do it.
-        # Maybe only the first send required it?
-        #dest_snap_create(dest_snap_path)
-
+                log_debug("src size = %s, dest size = %s" % (src_size, dest_size))
+                
+                if not dest_size:
+                    rbd_create(dest_image_path, src_size, host=cfg.dest_host)
+                    repl(src_snap_path, dest_image_path)
+                else:
+                    # figure out prev_snap_name
+                    prev_snap_name = get_latest_snap(dest_image_path, cfg.dest_host)
+                    
+                    repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
+        except Exception as e:
+            log_error(e)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Perform Ceph RBD incremental replication using export-diff and import-diff.")
