@@ -114,6 +114,17 @@ def snap_create(snap_path, host=None):
     raise Exception("Failed to create snapshot \"%s\":\n%s" % (snap_path, read_file(p.stderr)))
 
 
+def snap_rm(snap_path, host=None):
+    args = set_direction(host, ["rbd", "snap", "rm", snap_path])
+
+    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p.wait()
+    if( p.returncode == 0 ):
+        return
+    
+    raise Exception("Failed to rm snapshot \"%s\":\n%s" % (snap_path, read_file(p.stderr)))
+
+
 # return size in MiB (just like argument to rbd create --size ...)
 def get_size(image_path, host=None):
     args = set_direction(host, ["rbd", "info", image_path, "--format", "json"])
@@ -178,6 +189,10 @@ def repl(snap_path, dest_image_path, prev_snap_name=None):
     p2.wait()
     if( p2.returncode == 0 ):
         log_info("replication successful \"%s\" -> \"%s\"" % (snap_path, dest_image_path))
+
+        # clean up remote snap for better cluster performance... only keep one snap
+        prev_snap_path = snap_path.split("@")[0] + "@" + prev_snap_name
+        snap_rm(prev_snap_path, cfg.src_host)
         return
     raise Exception("failed to export/import diff the stream, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
                     (snap_path, prev_snap_name, dest_image_path, read_file(p2.stderr)) )
@@ -210,11 +225,9 @@ def repl_to_directory(snap_path, dest_image_dir_path):
     args += [snap_path, "-"]
     args = set_direction(cfg.src_host, args)
     
-    #args = ["dd", "if=/dev/zero", "bs=1", "count=5533333"]
-    
     p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
     
-    total=0 # temp test code
+    total=0
     
     snap_name = snap_path[ snap_path.index("@")+1: ]
     
@@ -231,13 +244,16 @@ def repl_to_directory(snap_path, dest_image_dir_path):
             
             f.write(buf[0:r])
             
-            total += r # temp test code
-            #print("read %s bytes" % r)
-            #print("total %s" % total)
+            total += r
 
+    log_info("read %s bytes" % total)
     p.wait()
     if( p.returncode == 0 ):
         os.rename(outfiletmp, outfile)
+
+        # clean up remote snap for better cluster performance... only keep one snap
+        prev_snap_path = snap_path.split("@")[0] + "@" + prev_snap_name
+        snap_rm(prev_snap_path, cfg.src_host)
     else:
         os.remove(outfiletmp)
         raise Exception("failed to export-diff the stream or save the file, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
