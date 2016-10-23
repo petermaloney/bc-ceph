@@ -287,7 +287,7 @@ def rotate(image_path, spec):
 
         # if we didn't find enough weekly snapshots yet
         log_debug("keeping %s as weekly" % snap)
-        if keep[snap]:
+        if snap in keep:
             keep[snap] += ",w"
         else:
             keep[snap] = "w"
