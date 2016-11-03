@@ -11,6 +11,7 @@ import argparse
 import fcntl
 import os
 import glob
+import traceback
 
 def log_error(message):
     print("ERROR: %s" % message)
@@ -252,8 +253,9 @@ def repl_to_directory(snap_path, dest_image_dir_path):
         os.rename(outfiletmp, outfile)
 
         # clean up remote snap for better cluster performance... only keep one snap
-        prev_snap_path = snap_path.split("@")[0] + "@" + prev_snap_name
-        snap_rm(prev_snap_path, cfg.src_host)
+        if prev_snap_name:
+            prev_snap_path = snap_path.split("@")[0] + "@" + prev_snap_name
+            snap_rm(prev_snap_path, cfg.src_host)
     else:
         os.remove(outfiletmp)
         raise Exception("failed to export-diff the stream or save the file, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
@@ -283,6 +285,11 @@ def do_import(config_file):
     except:
         cfg.image_excludes = []
 
+    try:
+        cfg.image_includes
+    except:
+        cfg.image_includes = []
+
 def create_snap_name():
     now = datetime.datetime.now(datetime.timezone.utc)
     nowstr = now.strftime("%Y-%m-%dT%H:%M:%S")
@@ -309,6 +316,8 @@ def run():
     dest_pool = "backup-%s-%s" % (cfg.src_cluster, cfg.src_pool)
 
     for image in get_images(cfg.src_pool, cfg.src_host):
+        if len(cfg.image_includes) != 0 and image not in cfg.image_includes:
+            continue
         if image in cfg.image_excludes:
             continue
         try: 
@@ -350,6 +359,7 @@ def run():
                     repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
         except Exception as e:
             log_error(e)
+            traceback.print_exc()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Perform Ceph RBD incremental replication using export-diff and import-diff.")
