@@ -12,7 +12,7 @@ import argparse
 import fcntl
 import os
 import collections
-
+import traceback
 
 from dateutil.relativedelta import relativedelta
 
@@ -191,7 +191,11 @@ def destroy_snaps(image_path, snaps):
                 # if the next snap is not in snaps, we keep it separate
                 if next_snap:
                     group += [next_snap]
-                merge_snaps(image_path, group)
+                try:
+                    merge_snaps(image_path, group)
+                except:
+                    log_error("failed to merge for image_path = %s, group = %s" % (image_path, group))
+                    traceback.print_exc()
                 group = []
             
             
