@@ -365,6 +365,8 @@ def run(spec):
     for image_path in args.image_paths:
         if image_path.endswith("/"):
             for image in get_images(image_path[0:-1]):
+                if image.endswith(".old"):
+                    continue
                 log_info("rotating image %s" % image_path + image)
                 rotate(image_path + image, spec)
                 
