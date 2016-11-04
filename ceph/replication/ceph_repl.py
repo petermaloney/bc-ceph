@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 #
 # replicates Ceph RBD images between pools or clusters; intended to be run by cron.
+#
+# FIXME: make all the snapshots for the same vm at the same time, eg. vm-199-disk-1 and vm-199-disk-2
+#    for all disks, "lock add"
+#    for all again, snap and "lock rm"
+#    continue backup
+
 
 import datetime
 import socket
@@ -224,12 +230,17 @@ def repl_to_directory(snap_path, dest_image_dir_path):
     if prev_snap_name:
         args += ["--from-snap", prev_snap_name]
     args += [snap_path, "-"]
+
+    # compression
+    args += ["|", "lz4"]
+    
     args = set_direction(cfg.src_host, args)
     
-    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
-    
+    p1 = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
+    p2 = subprocess.Popen(["lz4", "-d", "-c"], stdin=p1.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
+    p=p2
     total=0
-    
+
     snap_name = snap_path[ snap_path.index("@")+1: ]
     
     outfile = "%s/%s" % (dest_image_dir_path, snap_name)
@@ -259,7 +270,7 @@ def repl_to_directory(snap_path, dest_image_dir_path):
     else:
         os.remove(outfiletmp)
         raise Exception("failed to export-diff the stream or save the file, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
-                        (snap_path, prev_snap_name, outfiletmp, read_file(p.stderr)) )
+                        (snap_path, prev_snap_name, outfiletmp, read_file(p1.stderr) + read_file(p2.stderr)) )
         
     
 def do_import(config_file):
@@ -358,7 +369,6 @@ def run():
                     
                     repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
         except Exception as e:
-            log_error(e)
             traceback.print_exc()
 
 if __name__ == "__main__":
