@@ -7,6 +7,9 @@
 #    for all again, snap and "lock rm"
 #    continue backup
 
+# TODO:
+# a temp clean feature? just scan through image names on src, and for each image on dest, remove temp files
+# a log feature, to a file instead of stdout, and no log for when can't get a lock
 
 import datetime
 import socket
@@ -19,17 +22,21 @@ import os
 import glob
 import traceback
 
+
 def log_error(message):
     print("ERROR: %s" % message)
+    sys.stdout.flush()
 
 
 def log_debug(message):
     if debug:
         print("DEBUG: %s" % message)
+        sys.stdout.flush()
 
 
 def log_info(message):
     print("INFO: %s" % message)
+    sys.stdout.flush()
     
 
 def ssh_test(remote_host):
@@ -74,25 +81,28 @@ def read_file(fileobj):
         
     return ret
 
-def set_direction(host, args):
-    global cfg
-    
-    nice = ["ionice", "-c", "2", "-n", "7", "nice", "-n", "16"]
+def set_direction(host, pargs):
+    global cfg, args
+
+    if args.nice:
+        nice = ["ionice", "-c", "2", "-n", "7", "nice", "-n", "16"]
+    else:
+        nice = []
     
     # it is expected that when direction+host means "me" the host/xxx_host values are None
     if cfg.direction == "pull" and host == cfg.src_host:
-        args = ["ssh", host] + nice + args
+        pargs = ["ssh", host] + nice + pargs
     elif cfg.direction == "pull" and host == cfg.dest_host:
-        args = nice + args
+        pargs = nice + pargs
     elif cfg.direction == "push" and host == cfg.src_host:
-        args = nice + args
+        pargs = nice + pargs
     elif cfg.direction == "push" and host == cfg.dest_host:
-        args = ["ssh", host] + nice + args
+        pargs = ["ssh", host] + nice + pargs
     else: 
         raise Exception("unexpected direction = %s, host = %s" % (direction, host))
     
-    log_debug("host = %s, args = %s" % (host, args))
-    return args
+    log_debug("host = %s, pargs = %s" % (host, pargs))
+    return pargs
 
 
 def get_images(pool, host=None):
@@ -205,7 +215,7 @@ def repl(snap_path, dest_image_path, prev_snap_name=None):
                     (snap_path, prev_snap_name, dest_image_path, read_file(p2.stderr)) )
 
 def repl_to_directory(snap_path, dest_image_dir_path):
-    global cfg
+    global cfg, args
     
     newest = None
     prev_snap_name = None
@@ -226,19 +236,23 @@ def repl_to_directory(snap_path, dest_image_dir_path):
     log_info("Starting replication for snap src \"%s\" prev snap \"%s\" dest \"%s\"" 
         % (snap_path, prev_snap_name, dest_image_dir_path))
     
-    args = ["rbd", "export-diff"]
+    pargs = ["rbd", "export-diff"]
     if prev_snap_name:
-        args += ["--from-snap", prev_snap_name]
-    args += [snap_path, "-"]
+        pargs += ["--from-snap", prev_snap_name]
+    pargs += [snap_path, "-"]
 
-    # compression
-    args += ["|", "lz4"]
+    if args.compression == True:
+        pargs += ["|", "lz4"]
     
-    args = set_direction(cfg.src_host, args)
+    pargs = set_direction(cfg.src_host, pargs)
     
-    p1 = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
-    p2 = subprocess.Popen(["lz4", "-d", "-c"], stdin=p1.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
-    p=p2
+    p1 = subprocess.Popen(pargs, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
+    p=p1
+
+    if args.compression:
+        p2 = subprocess.Popen(["lz4", "-d", "-c"], stdin=p1.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
+        p=p2
+
     total=0
 
     snap_name = snap_path[ snap_path.index("@")+1: ]
@@ -326,11 +340,25 @@ def run():
     # destpool should be "backup-${cfg.src_cluster}-${cfg.src_pool}, eg. backup-ceph-rbd
     dest_pool = "backup-%s-%s" % (cfg.src_cluster, cfg.src_pool)
 
+    log_debug("image_includes = %s" % cfg.image_includes)
+    log_debug("image_excludes = %s" % cfg.image_excludes)
+    found_resume = None
     for image in get_images(cfg.src_pool, cfg.src_host):
         if len(cfg.image_includes) != 0 and image not in cfg.image_includes:
+            log_debug("skipping non-included %s" % image)
             continue
         if image in cfg.image_excludes:
+            log_debug("skipping excluded %s" % image)
             continue
+        if image.endswith(".old"):
+            log_debug("skipping .old %s" % image)
+            continue
+        if not found_resume and args.resume:
+            if image == args.resume or "%s/%s"%(cfg.src_pool,image) == args.resume:
+                found_resume = True
+            else:
+                log_debug("resume is set, and skipping %s" % image)
+                continue
         try: 
             snapname = create_snap_name()
             
@@ -371,6 +399,15 @@ def run():
         except Exception as e:
             traceback.print_exc()
 
+def boolarg(parser, name):
+    compression_parser = parser.add_mutually_exclusive_group(required=False)
+    compression_parser.add_argument('--%s' % name, dest=name, action='store_true',
+                    help='enable %s' % name)
+    compression_parser.add_argument('--no-%s' % name, dest=name, action='store_false',
+                    help='disable %s' % name)
+    parser.set_defaults(**{name: True})
+    return parser
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Perform Ceph RBD incremental replication using export-diff and import-diff.")
     
@@ -380,11 +417,18 @@ if __name__ == "__main__":
     parser.add_argument('-c', dest='config_file', action='store',
                     type=str, required=True,
                     help='Config file')
+    parser.add_argument('--resume', dest='resume', action='store',
+                    type=str,
+                    help='Name of an image to resume from; any image encountered before this one is skipped.')
 
+    boolarg(parser, "compression")
+    boolarg(parser, "nice")
+
+    global args
     args = parser.parse_args()
     global debug
     debug = args.debug
-    
+   
     do_import(args.config_file)
     
     got_lock = False
