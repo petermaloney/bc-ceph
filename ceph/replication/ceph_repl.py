@@ -40,6 +40,18 @@ def log_info(message):
     sys.stdout.flush()
     
 
+def format_bytes(count):
+    if count >= 1000 * 1000 * 1000 * 1000:
+        return "%sTB" % (int(float(count)/1000000000)/1000)
+    if count >= 1000 * 1000 * 1000:
+        return "%sGB" % (int(float(count)/1000000)/1000)
+    if count >= 1000 * 1000:
+        return "%sMB" % (int(float(count)/1000)/1000)
+    if count >= 1000:
+        return "%skB" % (int(float(count))/1000)
+    return "%sB" % count
+
+
 def ssh_test(remote_host):
     p = subprocess.Popen(["ssh", remote_host, "hostname -s"], 
         stdout=subprocess_devnull, stderr=subprocess_devnull)
@@ -273,7 +285,7 @@ def repl_to_directory(snap_path, dest_image_dir_path):
             
             total += r
 
-    log_info("read %s bytes" % total)
+    log_info("read %s" % format_bytes(total))
     p.wait()
     if( p.returncode == 0 ):
         os.rename(outfiletmp, outfile)
@@ -286,6 +298,7 @@ def repl_to_directory(snap_path, dest_image_dir_path):
         os.remove(outfiletmp)
         raise Exception("failed to export-diff the stream or save the file, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
                         (snap_path, prev_snap_name, outfiletmp, read_file(p1.stderr) + read_file(p2.stderr)) )
+    return total
         
     
 def do_import(args):
@@ -368,6 +381,7 @@ def run():
             else:
                 log_debug("resume is set, and skipping %s" % image)
                 continue
+        size_read = 0
         try: 
             snapname = create_snap_name()
             
@@ -386,7 +400,7 @@ def run():
                 if not os.path.exists(dest_image_path):
                     os.makedirs(dest_image_path)
                
-                repl_to_directory(src_snap_path, dest_image_path)
+                size_read = repl_to_directory(src_snap_path, dest_image_path)
             else:
                 dest_image_path = "%s/%s" % (dest_pool,image)
                 
@@ -399,15 +413,15 @@ def run():
                 
                 if not dest_size:
                     rbd_create(dest_image_path, src_size, host=cfg.dest_host)
-                    repl(src_snap_path, dest_image_path)
+                    size_read = repl(src_snap_path, dest_image_path)
                 else:
                     # figure out prev_snap_name
                     prev_snap_name = get_latest_snap(dest_image_path, cfg.dest_host)
                     
-                    repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
+                    size_read = repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
         except Exception as e:
             traceback.print_exc()
-        if args.sleep and args.sleep != 0:
+        if args.sleep and args.sleep != 0 and (size_read == None or size_read > 1000000):
             log_info("sleeping %ss" % args.sleep)
             time.sleep(args.sleep)
 
