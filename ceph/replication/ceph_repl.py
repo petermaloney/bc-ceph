@@ -288,7 +288,9 @@ def repl_to_directory(snap_path, dest_image_dir_path):
                         (snap_path, prev_snap_name, outfiletmp, read_file(p1.stderr) + read_file(p2.stderr)) )
         
     
-def do_import(config_file):
+def do_import(args):
+    config_file = args.config_file
+    
     if config_file.endswith(".py"):
         config_file = config_file[:len(config_file)-3]
     if "/" in config_file:
@@ -309,12 +311,18 @@ def do_import(config_file):
     try:
         cfg.image_excludes
     except:
-        cfg.image_excludes = []
+        if len(args.image_excludes) == 0:
+            cfg.image_excludes = []
+        else:
+            cfg.image_excludes = args.image_excludes.split(",")
 
     try:
         cfg.image_includes
     except:
-        cfg.image_includes = []
+        if len(args.image_includes) == 0:
+            cfg.image_includes = []
+        else:
+            cfg.image_includes = args.image_includes.split(",")
 
 def create_snap_name():
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -424,10 +432,16 @@ if __name__ == "__main__":
     parser.add_argument('--resume', dest='resume', action='store',
                     type=str,
                     help='Name of an image to resume from; any image encountered before this one is skipped.')
+    parser.add_argument('--image_includes', dest='image_includes', action='store',
+                    type=str, default="",
+                    help="comma separated names of images to include")
+    parser.add_argument('--image_excludes', dest='image_excludes', action='store',
+                    type=str, default="",
+                    help="comma separated names of images to exclude")
     parser.add_argument('--sleep', dest='sleep', action='store',
                     type=int, default=30,
                     help="experimental - seconds to sleep between each backup")
- 
+
     boolarg(parser, "compression")
     boolarg(parser, "nice")
 
@@ -436,7 +450,7 @@ if __name__ == "__main__":
     global debug
     debug = args.debug
    
-    do_import(args.config_file)
+    do_import(args)
     
     got_lock = False
     lockFile = "/var/run/ceph_repl.lock"
