@@ -21,6 +21,7 @@ import fcntl
 import os
 import glob
 import traceback
+import time
 
 
 def log_error(message):
@@ -398,6 +399,9 @@ def run():
                     repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
         except Exception as e:
             traceback.print_exc()
+        if args.sleep and args.sleep != 0:
+            log_info("sleeping %ss" % args.sleep)
+            time.sleep(args.sleep)
 
 def boolarg(parser, name):
     compression_parser = parser.add_mutually_exclusive_group(required=False)
@@ -420,7 +424,10 @@ if __name__ == "__main__":
     parser.add_argument('--resume', dest='resume', action='store',
                     type=str,
                     help='Name of an image to resume from; any image encountered before this one is skipped.')
-
+    parser.add_argument('--sleep', dest='sleep', action='store',
+                    type=int, default=30,
+                    help="experimental - seconds to sleep between each backup")
+ 
     boolarg(parser, "compression")
     boolarg(parser, "nice")
 
