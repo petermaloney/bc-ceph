@@ -291,6 +291,7 @@ def repl_to_directory(snap_path, dest_image_dir_path):
             f.write(buf[0:r])
             
             total += r
+        f.flush()
 
     log_info("read %s" % format_bytes(total))
     p.wait()
