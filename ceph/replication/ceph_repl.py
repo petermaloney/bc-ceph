@@ -429,7 +429,7 @@ def run():
                     size_read = repl(src_snap_path, dest_image_path, prev_snap_name=prev_snap_name)
         except Exception as e:
             traceback.print_exc()
-        if args.sleep and args.sleep != 0 and (size_read == None or size_read > 1000000):
+        if args.sleep and args.sleep != 0 and (size_read == None or size_read > 1000000000):
             log_info("sleeping %ss" % args.sleep)
             time.sleep(args.sleep)
 
