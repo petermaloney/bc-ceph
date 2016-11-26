@@ -3,10 +3,17 @@
 # replicates Ceph RBD images between pools or clusters; intended to be run by cron.
 #
 # FIXME: make all the snapshots for the same vm at the same time, eg. vm-199-disk-1 and vm-199-disk-2
-#    for all disks, "lock add"
-#    for all again, snap and "lock rm"
-#    continue backup
-
+#    idea 1:
+#        for all disks, "lock add"
+#        for all again, snap and "lock rm"
+#        continue backup
+#
+#        nope, this idea doesn't work... lock is already held by qemu, and it does nothing but prevent locking; it doesn't stop writes
+#    idea 2:
+#        ssh to proxmox, connect to monitor, suspend vm
+#
+#        I would rather just queue writes, not make the VM stop responding to clients... seems like a bad solution
+#
 # TODO:
 # a temp clean feature? just scan through image names on src, and for each image on dest, remove temp files
 # a log feature, to a file instead of stdout, and no log for when can't get a lock
