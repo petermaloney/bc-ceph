@@ -433,11 +433,13 @@ def run():
             time.sleep(args.sleep)
 
 def boolarg(parser, name):
+    opt = name.replace("_", "-")
+    dest = name.replace("-", "_")
     compression_parser = parser.add_mutually_exclusive_group(required=False)
-    compression_parser.add_argument('--%s' % name, dest=name, action='store_true',
-                    help='enable %s' % name)
-    compression_parser.add_argument('--no-%s' % name, dest=name, action='store_false',
-                    help='disable %s' % name)
+    compression_parser.add_argument('--%s' % opt, dest=dest, action='store_true',
+                    help='enable %s' % opt)
+    compression_parser.add_argument('--no-%s' % opt, dest=dest, action='store_false',
+                    help='disable %s' % opt)
     parser.set_defaults(**{name: True})
     return parser
 
@@ -453,16 +455,16 @@ if __name__ == "__main__":
     parser.add_argument('--resume', dest='resume', action='store',
                     type=str,
                     help='Name of an image to resume from; any image encountered before this one is skipped.')
-    parser.add_argument('--image_includes', dest='image_includes', action='store',
+    parser.add_argument('--image-includes', dest='image_includes', action='store',
                     type=str, default="",
                     help="comma separated names of images to include")
-    parser.add_argument('--image_excludes', dest='image_excludes', action='store',
+    parser.add_argument('--image-excludes', dest='image_excludes', action='store',
                     type=str, default="",
                     help="comma separated names of images to exclude")
     parser.add_argument('--sleep', dest='sleep', action='store',
                     type=int, default=30,
                     help="experimental - seconds to sleep between each backup")
-
+    boolarg(parser, "skip_lock")
     boolarg(parser, "compression")
     boolarg(parser, "nice")
 
@@ -481,9 +483,11 @@ if __name__ == "__main__":
                 fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 got_lock = True
             except: # python3.4.x has BlockingIOError here, but python 3.2.x has IOError here... so just don't use those class names
-                print("Could not obtain lock; another process already running? quitting")
-                exit(1)
-            run()
+                if not args.skip_lock:
+                    print("Could not obtain lock; another process already running? quitting")
+                    exit(1)
+            if got_lock or args.skip_lock:
+                run()
     finally:
         if got_lock:
             os.remove(lockFile)
