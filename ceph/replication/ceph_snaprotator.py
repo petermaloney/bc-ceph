@@ -132,7 +132,7 @@ def destroy_snap(image_path, snap_name):
 
 
 # for directory storage, merges a group of snap files together
-def merge_snaps(image_path, group):
+def merge_snaps(image_path, group, outfile=None, remove_merged=True):
     print("merging group %s into %s" % (group[0:-1], group[-1]))
 
     p = None
@@ -163,11 +163,14 @@ def merge_snaps(image_path, group):
         
     p.wait()
     if( p.returncode == 0 ):
-        out_path = os.path.join(image_path, group[-1])
+        if outfile == None:
+            outfile = group[-1]
+        out_path = os.path.join(image_path, outfile)
         os.rename(last_out, out_path)
-        for snap_name in group[0:-1]:
-            snap_file = os.path.join(image_path, snap_name)
-            os.remove(snap_file)
+        if remove_merged:
+            for snap_name in group[0:-1]:
+                snap_file = os.path.join(image_path, snap_name)
+                os.remove(snap_file)
         return
     raise Exception("Failed to merge snaps:\n%s" % (read_file(p.stderr)))
 
