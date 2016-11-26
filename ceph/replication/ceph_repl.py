@@ -255,23 +255,47 @@ def repl_to_directory(snap_path, dest_image_dir_path):
     
     log_info("Starting replication for snap src \"%s\" prev snap \"%s\" dest \"%s\"" 
         % (snap_path, prev_snap_name, dest_image_dir_path))
-    
-    pargs = ["rbd", "export-diff"]
+
+    ##############################   
+    #OLD BAD CODE
+#    pargs = ["rbd", "export-diff"]
+#    if prev_snap_name:
+#        pargs += ["--from-snap", prev_snap_name]
+#    pargs += [snap_path, "-"]
+#
+#    if args.compression == True:
+#        pargs += ["|", "lz4"]  # FIXME: this pipe here means that the first popen returns 0 always
+# 
+#    pargs = set_direction(cfg.src_host, pargs)
+#    
+#    p1 = subprocess.Popen(pargs, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
+#    p=p1
+#
+#    p2=None
+#    if args.compression:
+#        pargs = ["lz4", "-d", "-c"]# FIXME: this here means that popen returns 0 always... lz4 doesn't care that the file is 0 bytes and the prev command fails
+#        p2 = subprocess.Popen(, stdin=p1.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
+#        p=p2
+    ##############################   
+    # test new code
+    # note: unsupported and untested with push mode
+    # This is done as a string (shell script) instead of a chain of Popens because there is no way to check the returncode of any process except the last... and we don't want to corrupt our files if the export fails
+    remote_command = "ssh %s 'rbd export-diff" % cfg.src_host
     if prev_snap_name:
-        pargs += ["--from-snap", prev_snap_name]
-    pargs += [snap_path, "-"]
-
+        remote_command += " --from-snap " + prev_snap_name
+    remote_command += " " + snap_path + " -"
     if args.compression == True:
-        pargs += ["|", "lz4"]
-    
-    pargs = set_direction(cfg.src_host, pargs)
-    
-    p1 = subprocess.Popen(pargs, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
-    p=p1
+        remote_command += " | lz4; exit ${PIPESTATUS[0]}"
+    remote_command += "'"
+    if args.compression == True:
+        remote_command += " | lz4 -d -c; exit ${PIPESTATUS[0]}"
 
-    if args.compression:
-        p2 = subprocess.Popen(["lz4", "-d", "-c"], stdin=p1.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
-        p=p2
+    log_debug("remote_command = %s" % remote_command)
+    pargs = [remote_command]
+    p1 = subprocess.Popen(pargs, shell=True, executable='/bin/bash', stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1024*1024)
+    p2 = None
+    p=p1
+    ##############################   
 
     total=0
 
@@ -304,8 +328,13 @@ def repl_to_directory(snap_path, dest_image_dir_path):
             snap_rm(prev_snap_path, cfg.src_host)
     else:
         os.remove(outfiletmp)
+        if p2:
+            error_message = "rbd returned %s\n%s\nlz4 returned %s\n%s" % (p1.returncode, read_file(p1.stderr), p2.returncode, read_file(p2.stderr))
+        else:
+            error_message = "rbd returned %s\n%s" % (p1.returncode, read_file(p1.stderr) )
+
         raise Exception("failed to export-diff the stream or save the file, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
-                        (snap_path, prev_snap_name, outfiletmp, read_file(p1.stderr) + read_file(p2.stderr)) )
+                        (snap_path, prev_snap_name, outfiletmp, error_message) )
     return total
         
     
