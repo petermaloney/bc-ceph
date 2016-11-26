@@ -245,7 +245,7 @@ def repl_to_directory(snap_path, dest_image_dir_path):
     
     try:
         newest = None
-        for snap in sorted(glob.iglob(dest_image_dir_path+"/replication*"), key=os.path.getctime):
+        for snap in sorted(glob.iglob(dest_image_dir_path+"/replication*"), key=os.path.basename):
             if not snap.endswith(".tmp"):
                 newest = snap
         if newest:
