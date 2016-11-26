@@ -88,9 +88,10 @@ def get_next_snap(image_path, snap_name):
             found = True
     
 # for rbd, this actually destroys snaps
-# for files, this uses the rbd merge-diff command
+# (obsolete: for files, this uses the rbd merge-diff command)
 def destroy_snap(image_path, snap_name):
     if image_path[0:1] == "/":
+        # THIS SECTION OBSOLETE - replaced by merge_snaps(...)
         # file/directory storage
         snap_file = os.path.join(image_path, snap_name)
         next_snap = get_next_snap(image_path, snap_name)
@@ -130,6 +131,7 @@ def destroy_snap(image_path, snap_name):
         raise Exception("Failed to destroy snap \"%s\":\n%s" % (snap_path, read_file(p.stderr)))
 
 
+# for directory storage, merges a group of snap files together
 def merge_snaps(image_path, group):
     print("merging group %s into %s" % (group[0:-1], group[-1]))
 
@@ -169,12 +171,15 @@ def merge_snaps(image_path, group):
         return
     raise Exception("Failed to merge snaps:\n%s" % (read_file(p.stderr)))
 
+# for ceph storage, removes snaps listed in snaps
+# for directory storage, merges snaps together so that the ones listed in snaps are all gone; the original files are removed (including the one not listed that the listed ones are merged into), but a new file is made that is the merged version
 def destroy_snaps(image_path, snaps):
     if image_path[0:1] == "/":
         # group together snaps, piping them all together in one operation
         
         log_debug("in destroy_snaps, image_path = %s, snaps = %s" % (image_path, snaps))
-        
+       
+        # the list of snaps to merge together; the last one in the list is not destroyed; other snaps merge into the last one
         group = []
         for snap_name in snaps:
             # for all the snap names, we look for next snap...
@@ -307,7 +312,7 @@ def rotate(image_path, spec):
 
         # if we didn't find enough monthly snapshots yet
         log_debug("keeping %s as monthly" % snap)
-        if keep[snap]:
+        if snap in keep:
             keep[snap] += ",m"
         else:
             keep[snap] = "m"
