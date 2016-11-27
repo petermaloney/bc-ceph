@@ -130,22 +130,26 @@ def destroy_snap(image_path, snap_name):
 
         raise Exception("Failed to destroy snap \"%s\":\n%s" % (snap_path, read_file(p.stderr)))
 
-
+def make_merge_snaps_tmp(image_path):
+    name = os.path.basename(image_path)
+    path = os.path.dirname(image_path)
+    return os.path.join(path, "."+name+".merge_snaps.tmp")
+    
 # for directory storage, merges a group of snap files together
 def merge_snaps(image_path, group, outfile=None, remove_merged=True):
     print("merging group %s into %s" % (group[0:-1], group[-1]))
 
     p = None
     
-    first_snap_file = os.path.join(image_path, group[0])
-    second_snap_file = os.path.join(image_path, group[1])
+    first_snap_path = os.path.join(image_path, group[0])
+    second_snap_path = os.path.join(image_path, group[1])
     last_out = None
     if len(group) == 2:
-        last_out = second_snap_file + ".tmp"
+        last_out = make_merge_snaps_tmp(second_snap_path)
         firstout = os.path.join(image_path, last_out)
     else:
         firstout = "-"
-    args = ["rbd", "merge-diff", first_snap_file, second_snap_file, firstout]
+    args = ["rbd", "merge-diff", first_snap_path, second_snap_path, firstout]
     p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     
     if len(group) > 3:
@@ -157,7 +161,7 @@ def merge_snaps(image_path, group, outfile=None, remove_merged=True):
 
     if len(group) > 2:
         last_snap_file = os.path.join(image_path, group[-1])
-        last_out = os.path.join(image_path, last_snap_file+".tmp")
+        last_out = make_merge_snaps_tmp(os.path.join(image_path, last_snap_file))
         args = ["rbd", "merge-diff", "-", last_snap_file, last_out]
         p = subprocess.Popen(args, stdin=p.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
