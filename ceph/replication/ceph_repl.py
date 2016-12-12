@@ -228,11 +228,13 @@ def repl(snap_path, dest_image_path, prev_snap_name=None):
         log_info("replication successful \"%s\" -> \"%s\"" % (snap_path, dest_image_path))
 
         # clean up remote snap for better cluster performance... only keep one snap
-        prev_snap_path = snap_path.split("@")[0] + "@" + prev_snap_name
-        snap_rm(prev_snap_path, cfg.src_host)
+        if prev_snap_name:
+            prev_snap_path = snap_path.split("@")[0] + "@" + prev_snap_name
+            snap_rm(prev_snap_path, cfg.src_host)
         return
     raise Exception("failed to export/import diff the stream, src \"%s\" prev snap \"%s\" dest \"%s\":\n%s" % 
                     (snap_path, prev_snap_name, dest_image_path, read_file(p2.stderr)) )
+
 
 def repl_to_directory(snap_path, dest_image_dir_path):
     global cfg, args
@@ -374,6 +376,13 @@ def do_import(args):
         else:
             cfg.image_includes = args.image_includes.split(",")
 
+    try:
+        cfg.dest_pool
+    except:
+        # destpool should be "backup-${cfg.src_cluster}-${cfg.src_pool}, eg. backup-ceph-rbd
+        cfg.dest_pool = "backup-%s-%s" % (cfg.src_cluster, cfg.src_pool)
+
+
 def create_snap_name():
     now = datetime.datetime.now(datetime.timezone.utc)
     nowstr = now.strftime("%Y-%m-%dT%H:%M:%S")
@@ -395,9 +404,6 @@ def run():
     else:
         cfg.src_host = None
         cfg.dest_host = findhost(dest_cluster)
-
-    # destpool should be "backup-${cfg.src_cluster}-${cfg.src_pool}, eg. backup-ceph-rbd
-    dest_pool = "backup-%s-%s" % (cfg.src_cluster, cfg.src_pool)
 
     log_debug("image_includes = %s" % cfg.image_includes)
     log_debug("image_excludes = %s" % cfg.image_excludes)
@@ -423,7 +429,7 @@ def run():
             snapname = create_snap_name()
             
             src_snap_path = "%s/%s@%s" % (cfg.src_pool, image, snapname)
-            dest_snap_path = "%s/%s@%s" % (dest_pool, image, snapname)
+            dest_snap_path = "%s/%s@%s" % (cfg.dest_pool, image, snapname)
             src_image_path = "%s/%s" % (cfg.src_pool, image)
             
             log_info("Making snapshot: %s" % src_snap_path)
@@ -439,7 +445,7 @@ def run():
                
                 size_read = repl_to_directory(src_snap_path, dest_image_path)
             else:
-                dest_image_path = "%s/%s" % (dest_pool,image)
+                dest_image_path = "%s/%s" % (cfg.dest_pool,image)
                 
                 try:
                     dest_size = get_size(dest_image_path, cfg.dest_host)
