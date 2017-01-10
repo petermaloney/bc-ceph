@@ -188,10 +188,13 @@ def get_latest_snap(image_path, host=None):
     p.wait()
     if( p.returncode == 0 ):
         o = json.loads( read_file(p.stdout) )
-
+        obj = None
+        
         for obj in o:
             pass
         
+        if obj == None:
+            return None
         return obj["name"]
     
     raise Exception("Failed to get latest snap of \"%s\":\n%s" % (image_path, read_file(p.stderr)))
@@ -229,6 +232,7 @@ def repl(snap_path, dest_image_path, prev_snap_name=None):
 
         # clean up remote snap for better cluster performance... only keep one snap
         if prev_snap_name:
+            log_info("removing snap \"%s\"" % (prev_snap_name))
             prev_snap_path = snap_path.split("@")[0] + "@" + prev_snap_name
             snap_rm(prev_snap_path, cfg.src_host)
         return
@@ -326,6 +330,7 @@ def repl_to_directory(snap_path, dest_image_dir_path):
 
         # clean up remote snap for better cluster performance... only keep one snap
         if prev_snap_name:
+            log_info("removing snap \"%s\"" % (prev_snap_name))
             prev_snap_path = snap_path.split("@")[0] + "@" + prev_snap_name
             snap_rm(prev_snap_path, cfg.src_host)
     else:
