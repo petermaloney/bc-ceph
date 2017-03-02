@@ -1,0 +1,13 @@
+#!/bin/bash
+
+logrotate ~peter/ceph/ceph.logrotate
+
+( time ~peter/ceph/ceph_repl.py -c ~peter/ceph/~peter/ceph/ceph_repl_config_ceph_cephbak.py ) >/var/log/bc-ceph_repl.log 2>&1
+if grep -q "Could not obtain lock" /var/log/bc-ceph_repl.log; then
+    # don't keep useless logs
+    rm /var/log/bc-ceph_repl.log
+else
+    ~peter/ceph//ceph_repl_cleanup.bash >/var/log/bc-ceph_repl.log 2>&1
+    ~peter/ceph/ceph_snaprotator.py backup-ceph-proxmox/ >/var/log/bc-ceph_repl.log 2>&1
+fi
+
