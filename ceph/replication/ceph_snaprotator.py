@@ -403,7 +403,7 @@ if __name__ == "__main__":
                     help='no action, only print what would be done')
     parser.add_argument('-s', dest='spec', action='store_const',
                     const=True, default="7,4,6",
-                    help='comma separated daily, weekly, monthly counts to keep.')
+                    help='comma separated daily, weekly, monthly counts to keep (default 7,4,6).')
     parser.add_argument('image_paths', metavar='image_paths', type=str, nargs='+',
                     help='rbd image paths(s) to clean up, eg. rbd/vm-101-disk1, or pool name(s) with trailing slash, eg. rbd/')
 
