@@ -2,12 +2,34 @@
 
 logrotate ~peter/ceph/ceph.logrotate
 
-( time ~peter/ceph/ceph_repl.py -c ~peter/ceph/~peter/ceph/ceph_repl_config_ceph_cephbak.py ) >/var/log/bc-ceph_repl.log 2>&1
+if [ "$1" = "-v" ]; then
+    verbose=1
+    shift
+fi
+
+# works like tee when verbose, otherwise just like a simple redirect.
+# make sure to use 2>&1 before piping to tea
+tea() {
+    outfile="$1"
+    if [ "$verbose" = 1 ]; then
+        tee "$outfile"
+    else
+        cat >/var/log/bc-ceph_repl.log
+    fi
+}
+
+echo "Running replication (ceph_repl.py)"
+time ~peter/ceph/ceph_repl.py -c ~peter/ceph/~peter/ceph/ceph_repl_config_ceph_cephbak.py --sleep 0 "$@" 2>&1 | tea /var/log/bc-ceph_repl.log
+
 if grep -q "Could not obtain lock" /var/log/bc-ceph_repl.log; then
+    echo "Replication didn't run, so deleting the log."
     # don't keep useless logs
     rm /var/log/bc-ceph_repl.log
 else
-    ~peter/ceph//ceph_repl_cleanup.bash >/var/log/bc-ceph_repl.log 2>&1
-    ~peter/ceph/ceph_snaprotator.py backup-ceph-proxmox/ >/var/log/bc-ceph_repl.log 2>&1
+    echo "Running cleanup (ceph_repl_cleanup.bash)."
+    ~peter/ceph//ceph_repl_cleanup.bash 2>&1 | tea /var/log/bc-ceph_repl_cleanup.log
+
+    echo "Running snap rotation (ceph_snaprotator.py)."
+    ~peter/ceph/ceph_snaprotator.py backup-ceph-proxmox/ 2>&1 | tea /var/log/bc-ceph_snaprotator.log
 fi
 
