@@ -3,6 +3,7 @@
 import sys
 import subprocess
 import re
+import argparse
 
 #====================
 # global variables
@@ -17,6 +18,27 @@ avg_new = 0
 
 
 #====================
+
+def log_debug(text):
+    global args
+    if args.debug:
+        print("DEBUG: %s" % text)
+    
+def log_info(text):
+    global args
+    if not args.quiet:
+        print("%s" % text)
+    
+def ceph_health():
+    p = subprocess.Popen(["ceph", "health"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    out, err = p.communicate()
+    if( p.returncode == 0 ):
+        lines = out.decode("UTF-8")
+        return lines
+    else:
+        raise Exception("ceph osd df command failed; err = %s" % str(err))
 
 def ceph_osd_df():
     p = subprocess.Popen(["ceph", "osd", "df"],
@@ -130,7 +152,7 @@ def refresh_bytes():
     for line in ceph_pg_dump():
         line = line.split()
         
-        #print("line = %s \"%s\"" % (type(line), line))
+        #log_debug("line = %s \"%s\"" % (type(line), line))
         if line[0] == "pg_stat":
             # ignore header
             continue
@@ -143,14 +165,14 @@ def refresh_bytes():
         up = line[14]
         acting = line[16]
         
-        #print("DEBUG: size = %s, up = %s, acting = %s" % (size,up,acting))
+        #log_debug("DEBUG: size = %s, up = %s, acting = %s" % (size,up,acting))
         osds_old = acting.replace("[", "").replace("]", "").split(",")
         osds_new = up.replace("[", "").replace("]", "").split(",")
         
         osds_old = list(map(int, osds_old))
         osds_new = list(map(int, osds_new))
 
-        #print("DEBUG: osds_old = %s, osds_new = %s" % (osds_old, osds_new))
+        #log_debug("DEBUG: osds_old = %s, osds_new = %s" % (osds_old, osds_new))
         
         for osd_id in osds_old:
             osd_id = int(osd_id)
@@ -191,6 +213,12 @@ def print_report():
         print("%3d %7.5f %7.5f %14d %5.5f %14d %5.5f" % 
               (osd.osd_id, osd.weight, osd.reweight, osd.bytes_old, osd.var_old, osd.bytes_new, osd.var_new))
 
+def is_peering():
+    h = ceph_health()
+    if "peering" in h:
+        return True, h
+    return False, h
+    
 def adjust():
     lowest = osds[0]
     highest = osds[0]
@@ -201,31 +229,66 @@ def adjust():
         if osd.var_new > highest.var_new:
             highest = osd
     
-    print("DEBUG: lowest = %s %s" % (lowest.osd_id, lowest.var_new))
-    print("DEBUG: highest = %s %s" % (highest.osd_id, highest.var_new))
+    log_info("lowest osd_id = %s, var = %s" % (lowest.osd_id, lowest.var_new))
+    log_info("highest osd_id = %s, var = %s" % (highest.osd_id, highest.var_new))
 
-    if lowest.reweight != 1 and lowest.var_new < 0.97:
+    if lowest.reweight != 1 and lowest.var_new < (2 - args.oload):
         if lowest.var_new < 0.9:
-            increment = 0.02
+            increment = args.step
         else:
-            increment = 0.005
+            increment = args.step / 4
         new = round(round(lowest.reweight,3) + increment, 4)
         if new > 1:
             new = 1
-        print("Doing reweight: osd_id = %s, old = %s, new = %s" % (lowest.osd_id, lowest.reweight, new))
+        log_info("Doing reweight: osd_id = %s, reweight = %s -> %s" % (lowest.osd_id, lowest.reweight, new))
         ceph_osd_reweight(lowest.osd_id, new)
-    if highest.reweight != 1 and highest.var_new > 1.03:
+    else:
+        log_info("Skipping reweight: osd_id = %s, reweight = %s" % (lowest.osd_id, lowest.reweight))
+        
+    if highest.reweight != 1 and highest.var_new > args.oload:
         if highest.var_new > 1.10:
-            increment = 0.02
+            increment = args.step
         else:
-            increment = 0.005
+            increment = args.step / 4
         new = round(round(highest.reweight,3) - increment, 4)
-        print("Doing reweight: osd_id = %s, old = %s, new = %s" % (highest.osd_id, highest.reweight, new))
+        log_info("Doing reweight: osd_id = %s, old = %s, new = %s" % (highest.osd_id, highest.reweight, new))
         ceph_osd_reweight(highest.osd_id, new)
+    else:
+        log_info("Skipping reweight: osd_id = %s, old = %s" % (highest.osd_id, highest.reweight))
     
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Reweight OSDs so they have closer to equal space used.')
+    group = parser.add_mutually_exclusive_group()
+    parser.add_argument('-d', '--debug', action='store_const', const=True,
+                    help='enable debug level logging')
+
+    parser.add_argument('-a', '--adjust', action='store_const', const=True, default=False,
+                    help='adjust the reweight (default is report only)')
+    parser.add_argument('-q', '--quiet', action='store_const', const=True, default=False,
+                    help='quiet mode')
+    
+    parser.add_argument('-o', '--oload', default=1.03, action='store', type=float,
+                    help='minimum var before reweight (default 1.03)')
+    
+    parser.add_argument('-s', '--step', default=0.02, type=float,
+                    help='step size for each reweight (default 0.02)')
+
+    args = parser.parse_args()
+
+    if args.oload <= 1:
+        print("ERROR: oload must be greater than 1")
+        exit(1)
+        
     refresh_all()
-    print_report()
-    if len(sys.argv) > 1 and sys.argv[1] == "-a":
-        adjust()
+    
+    if not args.quiet:
+        print_report()
+    
+    if args.adjust:
+        b, h = is_peering()
+        if b:
+            print("ERROR: refusing to reweight during peering. Try again later.")
+            print(h)
+        else:
+            adjust()
