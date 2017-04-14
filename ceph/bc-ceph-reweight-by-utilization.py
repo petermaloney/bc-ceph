@@ -255,10 +255,10 @@ def adjust():
         else:
             increment = args.step / 4
         new = round(round(highest.reweight,3) - increment, 4)
-        log_info("Doing reweight: osd_id = %s, old = %s, new = %s" % (highest.osd_id, highest.reweight, new))
+        log_info("Doing reweight: osd_id = %s, reweight = %s -> %s" % (highest.osd_id, highest.reweight, new))
         ceph_osd_reweight(highest.osd_id, new)
     else:
-        log_info("Skipping reweight: osd_id = %s, old = %s" % (highest.osd_id, highest.reweight))
+        log_info("Skipping reweight: osd_id = %s, reweight = %s" % (highest.osd_id, highest.reweight))
     
 
 if __name__ == "__main__":
