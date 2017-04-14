@@ -152,7 +152,12 @@ def refresh_weight():
 def refresh_bytes():
     global avg_old
     global avg_new
+    global osds
     
+    for osd in osds.values():
+        osd.bytes_old = 0
+        osd.bytes_new = 0
+        
     for line in ceph_pg_dump():
         line = line.split()
         
