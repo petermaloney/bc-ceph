@@ -274,8 +274,8 @@ if __name__ == "__main__":
     parser.add_argument('-o', '--oload', default=1.03, action='store', type=float,
                     help='minimum var before reweight (default 1.03)')
     
-    parser.add_argument('-s', '--step', default=0.02, action='store', type=float,
-                    help='step size for each reweight (default 0.02)')
+    parser.add_argument('-s', '--step', default=0.03, action='store', type=float,
+                    help='step size for each reweight iteration. 1/4 of the value is used when variance is <=1.1. (default 0.03)')
 
     parser.add_argument('-l', '--loop', action='store_const', const=True, default=False,
                     help='Repeat the reweight process forever.')
