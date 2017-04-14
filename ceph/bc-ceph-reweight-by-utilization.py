@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
+#
+# Unlike with ceph osd reweight-by-utilization, variance is calculated based on the size of pgs, not the used space in the filesystem. 
+# That way you can reweight again many times during rebalance. And it seems more stable... not having to reweight again too soon.
 
 import sys
 import subprocess
 import re
 import argparse
+import time
 
 #====================
 # global variables
@@ -259,7 +263,6 @@ def adjust():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Reweight OSDs so they have closer to equal space used.')
-    group = parser.add_mutually_exclusive_group()
     parser.add_argument('-d', '--debug', action='store_const', const=True,
                     help='enable debug level logging')
 
@@ -271,24 +274,36 @@ if __name__ == "__main__":
     parser.add_argument('-o', '--oload', default=1.03, action='store', type=float,
                     help='minimum var before reweight (default 1.03)')
     
-    parser.add_argument('-s', '--step', default=0.02, type=float,
+    parser.add_argument('-s', '--step', default=0.02, action='store', type=float,
                     help='step size for each reweight (default 0.02)')
 
+    parser.add_argument('-l', '--loop', action='store_const', const=True, default=False,
+                    help='Repeat the reweight process forever.')
+    parser.add_argument('--sleep', action='store', default=60,
+                    help='Seconds to sleep between loops (default 60)')
+    
     args = parser.parse_args()
 
     if args.oload <= 1:
         print("ERROR: oload must be greater than 1")
         exit(1)
+
+    while True:
+        refresh_all()
         
-    refresh_all()
-    
-    if not args.quiet:
-        print_report()
-    
-    if args.adjust:
-        b, h = is_peering()
-        if b:
-            print("ERROR: refusing to reweight during peering. Try again later.")
-            print(h)
-        else:
-            adjust()
+        if not args.quiet:
+            print_report()
+        
+        if args.adjust:
+            b, h = is_peering()
+            if b:
+                print("ERROR: refusing to reweight during peering. Try again later.")
+                print(h)
+            else:
+                adjust()
+
+        if not args.loop:
+            break
+        time.sleep(args.sleep)
+        if not args.quiet:
+            print()
