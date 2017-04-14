@@ -236,7 +236,11 @@ def adjust():
     log_info("lowest osd_id = %s, var = %s" % (lowest.osd_id, lowest.var_new))
     log_info("highest osd_id = %s, var = %s" % (highest.osd_id, highest.var_new))
 
-    if lowest.reweight != 1 and lowest.var_new < (2 - args.oload):
+    spread = highest.var_new - lowest.var_new
+    max_spread = (args.oload - 1)*2
+    log_info("spread = %.5f, max_spread = %.5f" % (spread, max_spread))
+
+    if lowest.reweight != 1 and spread > max_spread:
         if lowest.var_new < 0.9:
             increment = args.step
         else:
@@ -249,7 +253,7 @@ def adjust():
     else:
         log_info("Skipping reweight: osd_id = %s, reweight = %s" % (lowest.osd_id, lowest.reweight))
         
-    if highest.reweight != 1 and highest.var_new > args.oload:
+    if spread > max_spread:
         if highest.var_new > 1.10:
             increment = args.step
         else:
