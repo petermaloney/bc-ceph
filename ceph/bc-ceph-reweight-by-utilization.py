@@ -212,9 +212,9 @@ def print_report():
     global avg_old
     global avg_new
     
-    print("%-3s %-7s %-7s %-14s %-5s %-14s %-5s" % ("osd", "weight", "reweight", "old size", "var", "new size", "var"))
+    print("%-3s %-7s %-8s %-14s %-7s %-14s %-7s" % ("osd", "weight", "reweight", "old size", "var", "new size", "var"))
     for osd in osds.values():
-        print("%3d %7.5f %7.5f %14d %5.5f %14d %5.5f" % 
+        print("%3d %7.5f %8.5f %14d %7.5f %14d %7.5f" % 
               (osd.osd_id, osd.weight, osd.reweight, osd.bytes_old, osd.var_old, osd.bytes_new, osd.var_new))
 
 def is_peering():
