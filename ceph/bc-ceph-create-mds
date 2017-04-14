@@ -1,0 +1,19 @@
+#!/bin/bash
+
+cluster=ceph
+hostname=$(hostname -s)
+
+mkdir -p "/var/lib/ceph/mds/${cluster}-${hostname}"
+touch "/var/lib/ceph/mds/${cluster}-${hostname}/sysvinit"
+
+ceph-authtool --create-keyring "/var/lib/ceph/mds/${cluster}-${hostname}"/keyring --gen-key -n mds."$hostname"
+
+ceph auth add mds."$hostname" osd "allow rwx" mds "allow" mon "allow profile mds" -i "/var/lib/ceph/mds/${cluster}-${hostname}"/keyring
+
+ceph osd pool create cephfs_metadata 64
+ceph osd pool create cephfs_data 64
+ceph fs new cephfs cephfs_metadata cephfs_data
+
+chown -R ceph:ceph "/var/lib/ceph/mds/${cluster}-${hostname}"
+
+service ceph start mds

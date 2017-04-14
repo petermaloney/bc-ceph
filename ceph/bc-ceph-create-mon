@@ -1,0 +1,38 @@
+#!/bin/bash -u
+
+cluster=ceph
+hostname=$(hostname -s)
+
+ip=$(getent hosts "$hostname" | awk '{print $1}')
+
+#if ! grep -qE "mon initial members.*${hostname}" /etc/ceph/ceph.conf; then
+#    echo "ERROR: mon is not in \"mon initial members\" in ceph.conf... aborting"
+#    exit 1
+#fi
+#if ! grep -qE "mon host.*${ip}" /etc/ceph/ceph.conf; then
+#    echo "ERROR: mon is not in \"mon host\" in ceph.conf... aborting"
+#    exit 1
+#fi
+if [ -e "/var/lib/ceph/mon/${cluster}-${hostname}" ]; then
+    echo "ERROR: mon dir already exists: /var/lib/ceph/mon/${cluster}-${hostname}"
+    exit 1
+fi
+
+ceph-mon --mkfs -i "${hostname}" --monmap /etc/ceph/monmap --keyring /etc/ceph/ceph.mon.keyring
+touch "/var/lib/ceph/mon/${cluster}-${hostname}/done"
+touch "/var/lib/ceph/mon/${cluster}-${hostname}/sysvinit"
+chown -R ceph:ceph "/var/lib/ceph/mon/${cluster}-${hostname}"
+
+## now add the monitor in ceph.conf (but will get overwritten by puppet)
+#sed -i -r \
+#    -e "s/(mon initial members = .*)/\1 $hostname/" \
+#    -e "s/(mon host = .*)/\1 $ip/" \
+#    /etc/ceph/ceph.conf
+
+# start the mon before adding to monmap, or bad things happen until you fix it (basically any ceph command fails)
+service ceph start mon
+
+# add to monmap
+echo ceph mon add "$hostname" "$ip"
+ceph mon add "$hostname" "$ip"
+

@@ -1,0 +1,46 @@
+#!/bin/bash -u
+
+###########################################################################
+# WARNING: this file is managed by puppet; your changes will be overwritten
+###########################################################################
+
+hostname=$(hostname -s)
+ip=$(getent hosts "$hostname" | awk '{print $1}')
+cluster=ceph
+fsid=$(awk '$1 == "fsid" {print $3}' /etc/ceph/ceph.conf)
+
+if [ "${ip:0:4}" = "127." ]; then
+    echo "ERROR: ip is local... deploy hosts file first"
+    exit 1
+fi
+if [ -e "/var/lib/ceph/mon/${cluster}-${hostname}" ]; then
+    echo "ERROR: a mon already exists here... aborting"
+    exit 1
+fi
+
+tmp=/var/lib/ceph/tmp
+# these paths are overwritten by puppet
+monring2=/etc/ceph/ceph.mon.keyring
+adminring2=/etc/ceph/ceph.client.admin.keyring
+# these paths are not overwritten by puppet
+adminring="$tmp"/ceph.client.admin.keyring
+monring="$tmp"/ceph.mon.keyring
+
+ceph-authtool --create-keyring "$monring" --gen-key -n mon. --cap mon 'allow *'
+ceph-authtool --create-keyring "$adminring" --gen-key -n client.admin --set-uid=0 --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *'
+ceph-authtool "$monring" --import-keyring "$adminring"
+monmaptool --create --clobber --add "${hostname}" "$ip" --fsid "$fsid" "$tmp"/monmap
+mkdir -p "/var/lib/ceph/mon/${cluster}-${hostname}"
+
+ceph-mon --mkfs -i "${hostname}" --monmap "$tmp"/monmap --keyring "$monring"
+
+touch "/var/lib/ceph/mon/${cluster}-${hostname}/done"
+touch "/var/lib/ceph/mon/${cluster}-${hostname}/sysvinit"
+
+chown -R ceph:ceph /var/lib/ceph/mon/*
+
+cp "$monring" "$monring2"
+cp "$adminring" "$adminring2"
+
+service ceph start mon
+

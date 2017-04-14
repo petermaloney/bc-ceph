@@ -1,0 +1,19 @@
+#!/bin/bash
+
+    bc_ceph_config_diff() {
+        osd_num=$(ps -ef | grep -Eo "ceph-osd.*-i [0-9]+" | head  -n1 | awk '{print $NF}')
+        filter="admin_socket|setuser|setgroup|public_addr|public_network|pid_file|rgw_data|osd_data|osd_journal|log_file|_dump_location|fsid|cluster_addr|cluster_network|keyring|mds_data|mon_data|mon_host|daemonize|mon_initial_members|leveldb_log|internal_safe_to_start_threads|log_to_stderr"
+        cur=$(ceph daemon osd."$osd_num" config diff | grep -Ev "$filter" | awk 'BEGIN{x=0}; /}/{x=0}; x; /"current"/{x=1}')
+        def=$(ceph daemon osd."$osd_num" config diff | grep -Ev "$filter" | awk 'BEGIN{x=0}; /}/{x=0}; x; /"defaults"/{x=1}' )
+
+        IFS=$'\n'
+        for name in $(awk -F: '{print $1}' <<< "$cur" | tr -d '" '); do
+            cur_value=$(grep "\"$name\"" <<< "$cur" | sed -r 's/:[ ]+/:/' | awk -F: '{print $2}' | sed -r 's/\"(.*)\",/\1/')
+            def_value=$(grep "\"$name\"" <<< "$def" | sed -r 's/:[ ]+/:/' | awk -F: '{print $2}' | sed -r 's/\"(.*)\",/\1/')
+            
+            echo "${name}=${cur_value} # $def_value"
+        done
+    }
+
+bc_ceph_config_diff
+

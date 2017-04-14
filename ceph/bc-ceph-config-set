@@ -1,0 +1,41 @@
+#!/bin/bash
+
+    config_set() {
+        dry_run=0
+        while [ "$#" != 0 ]; do
+            if [ "$1" = "-n" ]; then
+                dry_run=1
+            else
+                echo "ERROR: unknown argument: $1"
+                return 1
+            fi
+            shift
+        done
+    
+        echo "paste some config here and hit ctrl+d"
+        echo "formats supported:"
+        echo "   some thing = blah (like ceph.conf in docs)"
+        echo "   some_thing = blah (like daemon conf output placed in ceph.conf)"
+        echo "   \"some_thing\": \"blah\" (daemon conf output)"
+        IFS=$'\n'
+        for line in $(tr -d '"' | tr ':' '=' | sed -r 's/[ ]*=[ ]*/=/'); do
+            if [ -z "$line" ]; then
+                continue
+            fi
+            #echo "#line is $line"
+            name=$(awk -F= '{print $1}'<<<"$line")
+            value=$(awk -F= '{print $2}'<<<"$line")
+            
+            arg=$(echo "${name}=${value}" | sed -r -e 's/^[ ]+|[ ]+$//g' -e 's/[ ]+/-/g' -e 's/^[-]*/--/' -e 's/[-]+=[-]+/=/')
+            
+            if [ "$dry_run" = 1 ]; then
+                echo ceph tell osd.* injectargs "$arg"
+                echo ceph tell mon.* injectargs "$arg"
+            else
+                ceph tell osd.* injectargs "$arg"
+                ceph tell mon.* injectargs "$arg"
+            fi
+        done
+    }
+
+config_set "$@"

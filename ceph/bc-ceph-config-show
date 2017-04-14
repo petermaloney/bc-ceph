@@ -1,0 +1,15 @@
+#!/bin/bash
+
+    config_show() { 
+        search="$1";
+        if grep -q " " <<< "$search"; then
+            search=$(sed -r 's/ /_/g' <<< "$search")
+        fi
+        for n in $(stat -c %n /var/lib/ceph/osd/ceph-* | sed -r 's/.*-([0-9]+)$/\1/'); do
+            ceph daemon osd.$n config show | grep --color=auto "$search";
+            break
+        done
+    }
+
+config_show "$@"
+

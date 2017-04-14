@@ -1,0 +1,248 @@
+#!/bin/bash
+
+###########################################################################
+# WARNING: this file is managed by puppet; your changes will be overwritten
+###########################################################################
+
+###########################################################################
+# WARNING: this file is managed by puppet; your changes will be overwritten
+###########################################################################
+
+usage() {
+    echo "$0 [-j <size>] [-c <cluster>] [-d <osddevice>] [--bcache] [--no-start] <serial> <journalvg>"
+}
+
+# journals are supposed to be something like 1GiB, but let's just make some extra... the ssd is too huge anyway and this is still nothing
+journal_size=16G
+cluster=ceph
+osddevice=
+bcache=0
+start=1
+
+while [ "$#" != 0 ]; do
+    if [ "$1" = "-j" ]; then
+        journal_size="$2"
+        shift
+    elif [ "$1" = "-c" ]; then
+        cluster="$2"
+        shift
+    elif [ "$1" = "-d" ]; then
+        osddevice="$2"
+        shift
+    elif [ "$1" = "--bcache" ]; then
+        bcache=1
+    elif [ "$1" = "--no-start" ]; then
+        start=0
+    else
+        args+=("$1")
+    fi
+    shift
+done
+
+serial="${args[0]}"
+journalvg="${args[1]}"
+
+hostname=$(hostname -s)
+raw_osddevice="$osddevice"
+
+# this assumes the bcache goes on the same ssd as the journal
+# if ssds are a bottleneck, this means slightly slower... but if an SSD fails, it means fewer OSDs fail
+make_bcache() {
+    local raw_osddevice="$1"
+    
+    if ! which make-bcache >/dev/null 2>&1; then
+        echo "ERROR: make-bcache is not installed... aborting" >&2
+        exit 1
+    fi
+
+    if ! lsmod | grep -q ^bcache; then
+        echo "Waiting for bcache kernel module to load (for /sys/fs/bcache to appear)..."
+        modprobe bcache
+        while [ ! -e /sys/fs/bcache ]; do sleep 0.1; done
+        
+        if ! grep -q bcache /etc/initramfs-tools/modules; then
+            echo bcache >> /etc/initramfs-tools/modules
+            update-initramfs -uk all
+        fi
+    fi
+    
+    make-bcache -B "$raw_osddevice"
+    echo "$raw_osddevice" > /sys/fs/bcache/register
+    
+    
+    ## FIXME: this link disappears after some time... so don't trust it. Find out the /dev/bacheX name another way.
+    #bcache_dev_uuid=$(bcache-super-show "$raw_osddevice" | awk '$1=="dev.uuid"{print $2}')
+    #osddevice=/dev/bcache/by-uuid/"$bcache_dev_uuid"
+    
+    ## Tesing this fix
+    disk_name=$(basename "$(readlink -f "$raw_osddevice")")
+    bcache_name=$(basename "$(readlink -f "/sys/block/${disk_name}/bcache/dev")")
+    # next line is purposely not local... it sets the osddevice variable for the rest of the script
+    osddevice="/dev/$bcache_name"
+    #
+    
+    echo "Waiting for bcache device to appear..."
+    while [ ! -e "$osddevice" ]; do sleep 0.1; done
+
+    n=$(grep -Eo "[0-9]+$" <<< "$journalvg")
+    if [ ! -e "/dev/${journalvg}/bcache${n}" ]; then
+        lvcreate -L 222g -n bcache${n} ssd${n}
+        make-bcache -C /dev/ssd${n}/bcache${n}
+        echo /dev/ssd${n}/bcache${n} > /sys/fs/bcache/register
+            # ignore "Invalid argument" if dmesg says "device already registered"
+    fi
+    
+    csetuuid=$(bcache-super-show /dev/ssd${n}/bcache${n} | awk '$1 == "cset.uuid" {print $2}')
+    echo "$csetuuid" > "/sys/block/${bcache_name}/bcache/attach"
+    
+    echo writeback > "/sys/block/${bcache_name}/bcache/cache_mode"
+}
+
+# find devices by serial
+find_by_serial() {
+    local serial="$1"
+    
+    if [ "${serial:0:4}" = "/dev" ]; then
+        if [ ! -e "$serial" ]; then
+            echo "osd serial \"$serial\" looks like a dev node, but the file doesn't exist... quitting"
+            exit 1
+        fi
+        # it's not a serial, but a dev node... so just assume it's good and use it
+        echo "$serial"
+        return
+    fi
+    
+    local device=
+    for d in /sys/class/block/sd[a-z]*; do
+        if grep -q "[0-9]$" <<< "$d"; then
+            continue
+        fi
+        n=$(basename "$d")
+        dserial=$(smartctl -i /dev/"$n" | awk '/Serial [Nn]umber:/ {print $NF}')
+
+        if [ "$serial" = "$dserial" ]; then
+            device="/dev/$n"
+            break
+        fi
+    done
+
+    echo "$device"
+}
+
+# name it like /dev/vgname/journal_osdserial
+create_journal() {
+    local serial="$1"
+    local vg="$2"
+
+    local suffix=
+    if [ "${serial:0:4}" = "/dev" ]; then
+        suffix=$(tr / _ <<< "${serial:5}")
+    else
+        suffix="$serial"
+    fi
+
+    local name="journal_${suffix}"
+    local path="/dev/${vg}/${name}"
+    
+    if lvs "$path" >/dev/null 2>&1; then
+        echo "ERROR: osd journal already exists: $name" >&2
+        return 1
+    fi
+    lvcreate -n "$name" -L "$journal_size" "${vg}" >/dev/null 2>&1
+
+    echo "$path"
+}
+
+ddd0() {
+    for device in "$@"; do
+        if [ -z "$device" ]; then
+            echo "USAGE: ddd0 <device>"
+            return 1
+        fi
+        s=$(blockdev --getsize64 "$device")
+        dd if=/dev/zero of="$device" bs=1M count=10 >/dev/null 2>&1 | grep -vE "records|copied|No space left" >&2
+        dd if=/dev/zero of="$device" bs=1M seek=$((s-10485760)) oflag=seek_bytes 2>&1 | grep -vE "records|copied|No space left" >&2
+    done
+}
+
+fail() {
+    echo "$@" >&2
+    exit 1
+}
+
+if [ -z "$osddevice" ]; then
+    osddevice=$(find_by_serial "$serial")
+    if [ -z "$raw_osddevice" ]; then
+        raw_osddevice="$osddevice"
+    fi
+fi
+if [ -z "$osddevice" ]; then
+    fail "couldn't find serial for osd device \"$osddevice\""
+fi
+if [ ! -e "$osddevice" ]; then
+    fail "couldn't find osd device \"$osddevice\""
+fi
+
+echo "Creating journal: $journalvg/journal_$serial"
+journaldevice=$(create_journal "$serial" "$journalvg")
+if [ $? != 0 ]; then
+    exit 1
+fi
+
+if [ "$bcache" = 1 ]; then
+    echo "Creating bcache: $raw_osddevice and attaching cache from $journalvg"
+    make_bcache "$raw_osddevice"
+fi
+
+# weight is TB in the device; ceph docs suggest this
+s=$(blockdev --getsize64 "$osddevice")
+weight=$(echo "scale=4; $s / 1000/1000/1000/1000" | bc)
+
+echo "Cleaning out device $osddevice"
+ddd0 "$osddevice"
+
+echo "Cleaning out device $journalddevice"
+ddd0 "$journaldevice"
+
+echo "Creating osd"
+osd_uuid=$(uuidgen)
+osd_number=$(ceph osd create "$osd_uuid")
+
+# some cleanup...
+ceph auth del "osd.$osd_number"
+ceph osd crush rm osd."$osd_number"
+
+mkdir -p "/var/lib/ceph/osd/${cluster}-${osd_number}"
+echo "Creating filesystem"
+mkfs.xfs -L "osd.$osd_number" -i size=2048 -l sectsize=4096 -d sectsize=4096 "$osddevice"
+
+# for mount, doc said to use '-o user_xattr', but my machine says that's unknown for xfs
+xfs_uuid=$(blkid -o value -s UUID "$osddevice")
+if [ -z "$xfs_uuid" ]; then
+    echo "ERROR: cannot find uuid of $osddevice" >&2
+    exit 1
+fi
+sed -i -r "s|(.*/var/lib/ceph/osd/${cluster}-${osd_number}[^0-9].*)|#\1|" /etc/fstab
+echo "UUID=$xfs_uuid /var/lib/ceph/osd/${cluster}-${osd_number} xfs noatime,nodiratime,logbsize=256k,logbufs=8,inode64,nofail 0 2" >> /etc/fstab
+mount "/var/lib/ceph/osd/${cluster}-${osd_number}" || fail "couldn't mount osd data dir"
+
+ceph-osd -i ${osd_number} --osd-journal="$journaldevice" --mkfs --mkkey --osd-uuid "$osd_uuid"
+
+if [ -n "$journaldevice" -a ! -e "/var/lib/ceph/osd/${cluster}-${osd_number}/journal" ]; then
+    # for some reason, ceph-osd doesn't remember where its journal is... so add a link
+    ln -s "$journaldevice" "/var/lib/ceph/osd/${cluster}-${osd_number}/journal"
+fi
+
+ceph auth add osd.${osd_number} osd 'allow *' mon 'allow profile osd' -i "/var/lib/ceph/osd/${cluster}-${osd_number}/keyring"
+
+ceph --cluster "$cluster" osd crush add-bucket "$hostname" host
+ceph osd crush move "$hostname" root=default
+ceph --cluster "$cluster" osd crush add osd."$osd_number" "$weight" host="$hostname"
+
+touch "/var/lib/ceph/osd/${cluster}-${osd_number}/sysvinit"
+
+chown -R ceph:ceph "/var/lib/ceph/osd/${cluster}-${osd_number}" 
+chown -R ceph:ceph "$(readlink -f "$journaldevice")"
+if [ "$start" = 1 ]; then
+    service ceph start osd.${osd_number}
+fi
