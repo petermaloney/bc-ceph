@@ -273,7 +273,6 @@ if __name__ == "__main__":
     
     parser.add_argument('-o', '--oload', default=1.03, action='store', type=float,
                     help='minimum var before reweight (default 1.03)')
-    
     parser.add_argument('-s', '--step', default=0.03, action='store', type=float,
                     help='step size for each reweight iteration. 1/4 of the value is used when variance is <=1.1. (default 0.03)')
 
@@ -295,6 +294,7 @@ if __name__ == "__main__":
             print_report()
         
         if args.adjust:
+            # our "new" bytes and variance numbers will only be right after peering is done, so don't run until then
             b, h = is_peering()
             if b:
                 print("ERROR: refusing to reweight during peering. Try again later.")
