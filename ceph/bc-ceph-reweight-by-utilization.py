@@ -80,6 +80,7 @@ def ceph_pg_dump():
                 break
             last_pg+=1
     
+        # return just the pg lines, not the other stats
         return lines[header:last_pg]
     else:
         raise Exception("pg dump command failed; err = %s" % str(err))
@@ -150,8 +151,6 @@ def refresh_weight():
 
 
 def refresh_bytes():
-    global avg_old
-    global avg_new
     global osds
     
     for osd in osds.values():
@@ -200,6 +199,8 @@ def refresh_bytes():
 
 def refresh_var():
     global osds
+    global avg_old
+    global avg_new
     
     for osd in osds.values():
         osd.var_old = osd.bytes_old / osd.weight / avg_old
@@ -214,8 +215,7 @@ def refresh_all():
 
 
 def print_report():
-    global avg_old
-    global avg_new
+    global osds
     
     print("%-3s %-7s %-8s %-14s %-7s %-14s %-7s" % ("osd", "weight", "reweight", "old size", "var", "new size", "var"))
     for osd in osds.values():
@@ -241,11 +241,13 @@ def adjust():
     log_info("lowest osd_id = %s, var = %s" % (lowest.osd_id, lowest.var_new))
     log_info("highest osd_id = %s, var = %s" % (highest.osd_id, highest.var_new))
 
+    # We look at the spread between lowest and highest instead of just comparing the lowest to the avg, and  highest to avg. That way a lowest with reweight = 1 and a highest that is close enough to avg doesn't stop the process.
     spread = highest.var_new - lowest.var_new
     max_spread = (args.oload - 1)*2
     log_info("spread = %.5f, max_spread = %.5f" % (spread, max_spread))
 
-    if lowest.reweight != 1 and spread > max_spread:
+    # We don't reweight the lowest if it's 1, so that way one osd will always have reweight 1, so the other numbers always end up in a range 0-1. And also we don't raise numbers greater than 1.
+    if lowest.reweight < 1 and spread > max_spread:
         if lowest.var_new < 0.9:
             increment = args.step
         else:
