@@ -229,13 +229,13 @@ def is_peering():
     
 def get_increment(var):
     if var < 0.85 or var > 1.15:
-        return step
+        return args.step
     
     # relatively how far between 0.85 or 1.15 and 1 are we
     p = abs(1 - var) / 0.15
     
     # sharply lower step relative to p
-    return p**2 * step
+    return p**2 * args.step
 
 def adjust():
     lowest = osds[0]
@@ -257,7 +257,7 @@ def adjust():
 
     # We don't reweight the lowest if it's 1, so that way one osd will always have reweight 1, so the other numbers always end up in a range 0-1. And also we don't raise numbers greater than 1.
     if lowest.reweight < 1 and spread > max_spread:
-        increment = get_increment(lowest.var_new, args.step)
+        increment = get_increment(lowest.var_new)
         new = round(round(lowest.reweight,3) + increment, 4)
         if new > 1:
             new = 1
@@ -267,7 +267,7 @@ def adjust():
         log_info("Skipping reweight: osd_id = %s, reweight = %s" % (lowest.osd_id, lowest.reweight))
         
     if spread > max_spread:
-        increment = get_increment(highest.var_new, args.step)
+        increment = get_increment(highest.var_new)
         new = round(round(highest.reweight,3) - increment, 4)
         log_info("Doing reweight: osd_id = %s, reweight = %s -> %s" % (highest.osd_id, highest.reweight, new))
         ceph_osd_reweight(highest.osd_id, new)
