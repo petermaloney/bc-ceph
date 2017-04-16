@@ -274,6 +274,8 @@ def adjust():
     txt += ", spread = %.5f, max_spread = %.5f" % (spread, max_spread)
     logger.info(txt)
 
+    adjustment_made = False
+    
     # We don't reweight the lowest if it's 1, so that way one osd will always have reweight 1, so the other numbers always end up in a range 0-1. And also we don't raise numbers greater than 1.
     if lowest.reweight < 1 and spread > max_spread:
         increment = get_increment(lowest.var_new)
@@ -281,7 +283,9 @@ def adjust():
         if new > 1:
             new = 1
         logger.info("Doing reweight: osd_id = %s, reweight = %s -> %s" % (lowest.osd_id, lowest.reweight, new))
-        ceph_osd_reweight(lowest.osd_id, new)
+        if not args.dry_run:
+            ceph_osd_reweight(lowest.osd_id, new)
+        adjustment_made = True
     else:
         logger.verbose("Skipping reweight: osd_id = %s, reweight = %s" % (lowest.osd_id, lowest.reweight))
         
@@ -289,10 +293,13 @@ def adjust():
         increment = get_increment(highest.var_new)
         new = round(round(highest.reweight,3) - increment, 4)
         logger.info("Doing reweight: osd_id = %s, reweight = %s -> %s" % (highest.osd_id, highest.reweight, new))
-        ceph_osd_reweight(highest.osd_id, new)
+        if not args.dry_run:
+            ceph_osd_reweight(highest.osd_id, new)
+        adjustment_made = True
     else:
         logger.verbose("Skipping reweight: osd_id = %s, reweight = %s" % (highest.osd_id, highest.reweight))
     
+    return adjustment_made
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Reweight OSDs so they have closer to equal space used.')
@@ -307,6 +314,8 @@ if __name__ == "__main__":
                     help='print report table')
     parser.add_argument('-a', '--adjust', action='store_const', const=True, default=False,
                     help='adjust the reweight (default is report only)')
+    parser.add_argument('-n', '--dry-run', action='store_const', const=True, default=False,
+                    help='if combined with --adjust, go through all the adjustment code but don\'t actually adjust')
     
     parser.add_argument('-o', '--oload', default=1.03, action='store', type=float,
                     help='minimum var before reweight (default 1.03)')
@@ -317,6 +326,8 @@ if __name__ == "__main__":
                     help='Repeat the reweight process forever.')
     parser.add_argument('--sleep', action='store', default=60, type=float,
                     help='Seconds to sleep between loops (default 60)')
+    parser.add_argument('--sleep-short', action='store', default=10, type=float,
+                    help='Seconds to sleep between loops that do adjustments (default 10)')
     
     args = parser.parse_args()
 
@@ -342,17 +353,23 @@ if __name__ == "__main__":
         
         if args.report:
             print_report()
-        
+
+        adjustment_made = False
         if args.adjust:
             # our "new" bytes and variance numbers will only be right after peering is done, so don't run until then
             b, h = is_peering()
             if b:
                 logger.info("refusing to reweight during peering. Try again later.\n%s" % h)
             else:
-                adjust()
+                adjustment_made = adjust()
 
         if not args.loop:
             break
-        time.sleep(args.sleep)
+        
+        if adjustment_made:
+            time.sleep(args.sleep_short)
+        else:
+            time.sleep(args.sleep)
+            
         if args.report:
             print()
