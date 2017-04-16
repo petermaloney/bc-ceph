@@ -7,6 +7,7 @@ import subprocess
 import re
 import argparse
 import time
+import logging
 
 #====================
 # global variables
@@ -21,17 +22,31 @@ avg_new = 0
 
 
 #====================
+# logging
+#====================
 
-def log_debug(text):
-    global args
-    if args.debug:
-        print("DEBUG: %s" % text)
-    
-def log_info(text):
-    global args
-    if not args.quiet:
-        print("%s" % text)
-    
+logging.VERBOSE = 15
+def log_verbose(self, message, *args, **kws):
+    if self.isEnabledFor(logging.VERBOSE):
+        self.log(logging.VERBOSE, message, *args, **kws)
+
+logging.addLevelName(logging.VERBOSE, "VERBOSE")
+logging.Logger.verbose = log_verbose
+
+formatter = logging.Formatter(
+    fmt='%(asctime)-15s.%(msecs)03d %(levelname)s: %(message)s',
+    datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+
+logger = logging.getLogger("bc-ceph-reweight-by-utilization")
+
+logger.addHandler(handler)
+
+#====================
+
 def ceph_health():
     p = subprocess.Popen(["ceph", "health"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -114,8 +129,9 @@ def refresh_average():
     avg_old = total_old/count
     avg_new = total_new/count
 
-    #print("avg_old = %s" % avg_old)
-    #print("avg_new = %s" % avg_new)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("avg_old = %s" % avg_old)
+        logger.debug("avg_new = %s" % avg_new)
 
 
 class Osd:
@@ -159,7 +175,6 @@ def refresh_bytes():
     for line in ceph_pg_dump():
         line = line.split()
         
-        #log_debug("line = %s \"%s\"" % (type(line), line))
         if line[0] == "pg_stat":
             # ignore header
             continue
@@ -172,14 +187,17 @@ def refresh_bytes():
         up = line[14]
         acting = line[16]
         
-        #log_debug("DEBUG: size = %s, up = %s, acting = %s" % (size,up,acting))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("DEBUG: size = %s, up = %s, acting = %s" % (size,up,acting))
+        
         osds_old = acting.replace("[", "").replace("]", "").split(",")
         osds_new = up.replace("[", "").replace("]", "").split(",")
         
         osds_old = list(map(int, osds_old))
         osds_new = list(map(int, osds_new))
 
-        #log_debug("DEBUG: osds_old = %s, osds_new = %s" % (osds_old, osds_new))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("DEBUG: osds_old = %s, osds_new = %s" % (osds_old, osds_new))
         
         for osd_id in osds_old:
             osd_id = int(osd_id)
@@ -247,13 +265,14 @@ def adjust():
         if osd.var_new > highest.var_new:
             highest = osd
     
-    log_info("lowest osd_id = %s, var = %s" % (lowest.osd_id, lowest.var_new))
-    log_info("highest osd_id = %s, var = %s" % (highest.osd_id, highest.var_new))
-
     # We look at the spread between lowest and highest instead of just comparing the lowest to the avg, and  highest to avg. That way a lowest with reweight = 1 and a highest that is close enough to avg doesn't stop the process.
     spread = highest.var_new - lowest.var_new
     max_spread = (args.oload - 1)*2
-    log_info("spread = %.5f, max_spread = %.5f" % (spread, max_spread))
+    
+    txt = "lowest osd_id = %s, var = %.5f" % (lowest.osd_id, lowest.var_new)
+    txt += ", highest osd_id = %s, var = %.5f" % (highest.osd_id, highest.var_new)
+    txt += ", spread = %.5f, max_spread = %.5f" % (spread, max_spread)
+    logger.info(txt)
 
     # We don't reweight the lowest if it's 1, so that way one osd will always have reweight 1, so the other numbers always end up in a range 0-1. And also we don't raise numbers greater than 1.
     if lowest.reweight < 1 and spread > max_spread:
@@ -261,29 +280,33 @@ def adjust():
         new = round(round(lowest.reweight,3) + increment, 4)
         if new > 1:
             new = 1
-        log_info("Doing reweight: osd_id = %s, reweight = %s -> %s" % (lowest.osd_id, lowest.reweight, new))
+        logger.info("Doing reweight: osd_id = %s, reweight = %s -> %s" % (lowest.osd_id, lowest.reweight, new))
         ceph_osd_reweight(lowest.osd_id, new)
     else:
-        log_info("Skipping reweight: osd_id = %s, reweight = %s" % (lowest.osd_id, lowest.reweight))
+        logger.verbose("Skipping reweight: osd_id = %s, reweight = %s" % (lowest.osd_id, lowest.reweight))
         
     if spread > max_spread:
         increment = get_increment(highest.var_new)
         new = round(round(highest.reweight,3) - increment, 4)
-        log_info("Doing reweight: osd_id = %s, reweight = %s -> %s" % (highest.osd_id, highest.reweight, new))
+        logger.info("Doing reweight: osd_id = %s, reweight = %s -> %s" % (highest.osd_id, highest.reweight, new))
         ceph_osd_reweight(highest.osd_id, new)
     else:
-        log_info("Skipping reweight: osd_id = %s, reweight = %s" % (highest.osd_id, highest.reweight))
+        logger.verbose("Skipping reweight: osd_id = %s, reweight = %s" % (highest.osd_id, highest.reweight))
     
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Reweight OSDs so they have closer to equal space used.')
     parser.add_argument('-d', '--debug', action='store_const', const=True,
                     help='enable debug level logging')
-
-    parser.add_argument('-a', '--adjust', action='store_const', const=True, default=False,
-                    help='adjust the reweight (default is report only)')
+    parser.add_argument('-v', '--verbose', action='store_const', const=True, default=False,
+                    help='verbose mode')
     parser.add_argument('-q', '--quiet', action='store_const', const=True, default=False,
                     help='quiet mode')
+
+    parser.add_argument('-r', '--report', action='store_const', const=True, default=False,
+                    help='print report table')
+    parser.add_argument('-a', '--adjust', action='store_const', const=True, default=False,
+                    help='adjust the reweight (default is report only)')
     
     parser.add_argument('-o', '--oload', default=1.03, action='store', type=float,
                     help='minimum var before reweight (default 1.03)')
@@ -298,26 +321,38 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.oload <= 1:
-        print("ERROR: oload must be greater than 1")
+        logger.error("oload must be greater than 1")
         exit(1)
+
+    if not args.report and not args.adjust:
+        logger.error("Either report or adjust must be set")
+        exit(1)
+
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+    elif args.verbose:
+        logger.setLevel(logging.VERBOSE)
+    elif args.quiet:
+        logger.setLevel(logging.WARNING)
+    else:
+        logger.setLevel(logging.INFO)
 
     while True:
         refresh_all()
         
-        if not args.quiet:
+        if args.report:
             print_report()
         
         if args.adjust:
             # our "new" bytes and variance numbers will only be right after peering is done, so don't run until then
             b, h = is_peering()
             if b:
-                print("ERROR: refusing to reweight during peering. Try again later.")
-                print(h)
+                logger.info("refusing to reweight during peering. Try again later.\n%s" % h)
             else:
                 adjust()
 
         if not args.loop:
             break
         time.sleep(args.sleep)
-        if not args.quiet:
+        if args.report:
             print()
