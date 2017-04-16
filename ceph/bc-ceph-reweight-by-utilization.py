@@ -292,7 +292,7 @@ if __name__ == "__main__":
 
     parser.add_argument('-l', '--loop', action='store_const', const=True, default=False,
                     help='Repeat the reweight process forever.')
-    parser.add_argument('--sleep', action='store', default=60,
+    parser.add_argument('--sleep', action='store', default=60, type=float,
                     help='Seconds to sleep between loops (default 60)')
     
     args = parser.parse_args()
