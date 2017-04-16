@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 #
-# Unlike with ceph osd reweight-by-utilization, variance is calculated based on the size of pgs, not the used space in the filesystem. 
-# That way you can reweight again many times during rebalance. And it seems more stable... not having to reweight again too soon.
+# Variance is calculated based on the size of pgs, not the used space in the filesystem. The values will be different than seen with ceph osd reweight-by-utilization or ceph osd df. But it means we can predict how full the OSDs will be when rebalance is done. That way you can reweight during rebalance until we know the balance will be right when rebalance is done. And it seems more stable... not having to reweight again too soon.
 
 import sys
 import subprocess
@@ -228,6 +227,16 @@ def is_peering():
         return True, h
     return False, h
     
+def get_increment(var):
+    if var < 0.85 or var > 1.15:
+        return step
+    
+    # relatively how far between 0.9 and 1 are we
+    p = abs(1 - var) / 0.15
+    
+    # sharply lower step relative to p
+    return p**2 * step
+
 def adjust():
     lowest = osds[0]
     highest = osds[0]
@@ -248,10 +257,7 @@ def adjust():
 
     # We don't reweight the lowest if it's 1, so that way one osd will always have reweight 1, so the other numbers always end up in a range 0-1. And also we don't raise numbers greater than 1.
     if lowest.reweight < 1 and spread > max_spread:
-        if lowest.var_new < 0.9:
-            increment = args.step
-        else:
-            increment = args.step / 4
+        increment = get_increment(lowest.var_new, args.step)
         new = round(round(lowest.reweight,3) + increment, 4)
         if new > 1:
             new = 1
@@ -261,10 +267,7 @@ def adjust():
         log_info("Skipping reweight: osd_id = %s, reweight = %s" % (lowest.osd_id, lowest.reweight))
         
     if spread > max_spread:
-        if highest.var_new > 1.10:
-            increment = args.step
-        else:
-            increment = args.step / 4
+        increment = get_increment(highest.var_new, args.step)
         new = round(round(highest.reweight,3) - increment, 4)
         log_info("Doing reweight: osd_id = %s, reweight = %s -> %s" % (highest.osd_id, highest.reweight, new))
         ceph_osd_reweight(highest.osd_id, new)
@@ -285,7 +288,7 @@ if __name__ == "__main__":
     parser.add_argument('-o', '--oload', default=1.03, action='store', type=float,
                     help='minimum var before reweight (default 1.03)')
     parser.add_argument('-s', '--step', default=0.03, action='store', type=float,
-                    help='step size for each reweight iteration. 1/4 of the value is used when variance is <=1.1. (default 0.03)')
+                    help='max step size for each reweight iteration. the value is scaled down when 0.9<var<1.1 (default 0.03)')
 
     parser.add_argument('-l', '--loop', action='store_const', const=True, default=False,
                     help='Repeat the reweight process forever.')
