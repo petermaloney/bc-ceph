@@ -231,7 +231,7 @@ def get_increment(var):
     if var < 0.85 or var > 1.15:
         return step
     
-    # relatively how far between 0.9 and 1 are we
+    # relatively how far between 0.85 or 1.15 and 1 are we
     p = abs(1 - var) / 0.15
     
     # sharply lower step relative to p
@@ -288,7 +288,7 @@ if __name__ == "__main__":
     parser.add_argument('-o', '--oload', default=1.03, action='store', type=float,
                     help='minimum var before reweight (default 1.03)')
     parser.add_argument('-s', '--step', default=0.03, action='store', type=float,
-                    help='max step size for each reweight iteration. the value is scaled down when 0.9<var<1.1 (default 0.03)')
+                    help='max step size for each reweight iteration. the value is scaled down when 0.85<var<1.15 (default 0.03)')
 
     parser.add_argument('-l', '--loop', action='store_const', const=True, default=False,
                     help='Repeat the reweight process forever.')
