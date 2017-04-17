@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 #
 # Variance is calculated based on the size of pgs, not the used space in the filesystem. The values will be different than seen with ceph osd reweight-by-utilization or ceph osd df. But it means we can predict how full the OSDs will be when rebalance is done. That way you can reweight during rebalance until we know the balance will be right when rebalance is done. And it seems more stable... not having to reweight again too soon.
+#
+# Licensed GNU GPLv2; if you did not recieve a copy of the license, get one at http://www.gnu.org/licenses/gpl-2.0.html
 
 import sys
 import subprocess
