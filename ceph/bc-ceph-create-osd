@@ -1,22 +1,17 @@
 #!/bin/bash
 
-###########################################################################
-# WARNING: this file is managed by puppet; your changes will be overwritten
-###########################################################################
-
-###########################################################################
-# WARNING: this file is managed by puppet; your changes will be overwritten
-###########################################################################
-
 usage() {
-    echo "$0 [-j <size>] [-c <cluster>] [-d <osddevice>] [--bcache] [--no-start] <serial> <journalvg>"
+    echo "$0 [-j <size>] [-c <cluster>] [-d <osddevice>] [--bcache <cache_device>] [--no-start] --journal <journal-device> <serial>"
+    echo "The bcache and journal device are not the partition but the device with the partition table. The partition does not need to exist, and will be created. If a partition exists with a label that matches the serial, it will be used."
 }
 
 # journals are supposed to be something like 1GiB, but let's just make some extra... the ssd is too huge anyway and this is still nothing
+# this is GiB, not GB
 journal_size=16G
 cluster=ceph
 osddevice=
-bcache=0
+bcache=
+journal=
 start=1
 
 while [ "$#" != 0 ]; do
@@ -30,7 +25,11 @@ while [ "$#" != 0 ]; do
         osddevice="$2"
         shift
     elif [ "$1" = "--bcache" ]; then
-        bcache=1
+        bcache="$2"
+        shift
+    elif [ "$1" = "--journal" ]; then
+        journal="$2"
+        shift
     elif [ "$1" = "--no-start" ]; then
         start=0
     else
@@ -40,15 +39,23 @@ while [ "$#" != 0 ]; do
 done
 
 serial="${args[0]}"
-journalvg="${args[1]}"
 
 hostname=$(hostname -s)
 raw_osddevice="$osddevice"
 
-# this assumes the bcache goes on the same ssd as the journal
-# if ssds are a bottleneck, this means slightly slower... but if an SSD fails, it means fewer OSDs fail
+if [ -z "$journal" ]; then
+    echo "ERROR: journal is required"
+    usage
+    exit 1
+fi
+if [ -z "$journal" -o ! -e "$journal" ]; then
+    echo "ERROR: journal \"$journal\" does not exist"
+    exit 1
+fi
+
 make_bcache() {
     local raw_osddevice="$1"
+    local bcache="$2"
     
     if ! which make-bcache >/dev/null 2>&1; then
         echo "ERROR: make-bcache is not installed... aborting" >&2
@@ -67,7 +74,7 @@ make_bcache() {
     fi
     
     make-bcache -B "$raw_osddevice"
-    echo "$raw_osddevice" > /sys/fs/bcache/register
+    echo "$raw_osddevice" > /sys/fs/bcache/register 2>/dev/null
     
     
     ## FIXME: this link disappears after some time... so don't trust it. Find out the /dev/bacheX name another way.
@@ -77,22 +84,23 @@ make_bcache() {
     ## Tesing this fix
     disk_name=$(basename "$(readlink -f "$raw_osddevice")")
     bcache_name=$(basename "$(readlink -f "/sys/block/${disk_name}/bcache/dev")")
-    # next line is purposely not local... it sets the osddevice variable for the rest of the script
+    # osddevice is global
     osddevice="/dev/$bcache_name"
     #
     
     echo "Waiting for bcache device to appear..."
     while [ ! -e "$osddevice" ]; do sleep 0.1; done
 
-    n=$(grep -Eo "[0-9]+$" <<< "$journalvg")
-    if [ ! -e "/dev/${journalvg}/bcache${n}" ]; then
-        lvcreate -L 222g -n bcache${n} ssd${n}
-        make-bcache -C /dev/ssd${n}/bcache${n}
-        echo /dev/ssd${n}/bcache${n} > /sys/fs/bcache/register
-            # ignore "Invalid argument" if dmesg says "device already registered"
+    
+    # attach cache
+    cache_found=($(stat -c %n /dev/disk/by-partlabel/*-bcache))
+    if [ "${#cache_found[@]}" != 1 ]; then
+        echo "ERROR: expected 1 cache device /dev/disk/by-partlabel/*-bcache but found:" >&2
+        ls -l /dev/disk/by-partlabel/*-bcache >&2
+        return 1
     fi
     
-    csetuuid=$(bcache-super-show /dev/ssd${n}/bcache${n} | awk '$1 == "cset.uuid" {print $2}')
+    csetuuid=$(bcache-super-show "${cache_found[0]}" | awk '$1 == "cset.uuid" {print $2}')
     echo "$csetuuid" > "/sys/block/${bcache_name}/bcache/attach"
     
     echo writeback > "/sys/block/${bcache_name}/bcache/cache_mode"
@@ -129,10 +137,9 @@ find_by_serial() {
     echo "$device"
 }
 
-# name it like /dev/vgname/journal_osdserial
 create_journal() {
     local serial="$1"
-    local vg="$2"
+    local journal="$2"
 
     local suffix=
     if [ "${serial:0:4}" = "/dev" ]; then
@@ -142,14 +149,35 @@ create_journal() {
     fi
 
     local name="journal_${suffix}"
-    local path="/dev/${vg}/${name}"
+    local path="/dev/disk/by-partlabel/${name}"
     
-    if lvs "$path" >/dev/null 2>&1; then
+    if [ -e "$path" ]; then
+        #TODO: by default, error, but have a --force option which will ddd0 it
         echo "ERROR: osd journal already exists: $name" >&2
         return 1
     fi
-    lvcreate -n "$name" -L "$journal_size" "${vg}" >/dev/null 2>&1
+    
+    # sgdisk 0.8.8 on Ubuntu 14.04 doesn't support "0:..." in the -c option to set a name, so we fallback to this mess
+    old=$(sgdisk -Pp "$journal")
 
+    # this will create a GPT table if there isn't one
+    # and it will make the partition and give it a name
+    new=$(sgdisk -n 0:0:+"$journal_size" -Pp "$journal")
+
+    d=$(diff -u0 <(echo "$old") <(echo "$new") | tail -n1)
+    if ! grep -qE "\+  [0-9]+[ ]+[0-9]+[ ]+[0-9]+[ ]+$(grep -Eo '[0-9]+'<<< "$journal_size")" <<< "$d"; then
+        echo "ERROR: the sgdisk name workaround failed... giving up. The diff between old and new partition table:"
+        echo "$d"
+        return 1
+    fi
+    start=$(awk '{print $3}' <<< "$d")
+    end=$(awk '{print $4}' <<< "$d")
+    
+    parted -s "$journal" mkpart "$name" "$start"s "$end"s >/dev/null 2>&1
+    if [ "$?" != 0 ]; then
+        return 1
+    fi
+    
     echo "$path"
 }
 
@@ -183,15 +211,15 @@ if [ ! -e "$osddevice" ]; then
     fail "couldn't find osd device \"$osddevice\""
 fi
 
-echo "Creating journal: $journalvg/journal_$serial"
-journaldevice=$(create_journal "$serial" "$journalvg")
+echo "Creating journal on device $journal for serial $serial"
+journaldevice=$(create_journal "$serial" "$journal")
 if [ $? != 0 ]; then
     exit 1
 fi
 
-if [ "$bcache" = 1 ]; then
-    echo "Creating bcache: $raw_osddevice and attaching cache from $journalvg"
-    make_bcache "$raw_osddevice"
+if [ -n "$bcache" ]; then
+    echo "Creating bcache backing device $raw_osddevice and attaching cache from $journal"
+    make_bcache "$raw_osddevice" "$bcache"
 fi
 
 # weight is TB in the device; ceph docs suggest this
