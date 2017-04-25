@@ -170,21 +170,50 @@ create_journal_colocated() {
     
     if ! parted -s "$journal" print | grep -Eq "Partition Table: gpt"; then
         # if no partition table, make one
-        parted -s "$journal" mktable gpt
+        parted -s "$journal" mktable gpt >/dev/null 2>&1
+        if [ "$?" != 0 ]; then
+            echo "ERROR: failed to create partition table on \"$journal\"" >&2
+            return 1
+        fi
     fi
     
-    lines=$(parted /dev/rbd0 -sm print | wc -l)
+    lines=$(parted "$journal" -sm print | wc -l)
     if [ "$lines" -gt 2 ]; then
         echo "ERROR: The colocated journal+osd device already has partitions. Aborting." >&2
         return 1
     fi
     
-    sgdisk -n 0:0:+"$journal_size" "$journal" || fail "failed to create journal partition"
-    sgdisk -n 0:0:-0 "$journal" || fail "failed to create osd data partition"
+    if ! sgdisk -n 0:0:+"$journal_size" "$journal" >/dev/null 2>&1; then
+        echo  "ERROR: failed to create journal partition" >&2
+        return 1
+    fi
+    if ! sgdisk -n 0:0:-1 "$journal" >/dev/null 2>&1; then
+        echo "ERROR: failed to create osd data partition" >&2
+        return 1
+    fi
     
+    if ! parted "$journal" name 1 "journal_${suffix}" >/dev/null 2>&1; then
+        echo  "ERROR: failed to set journal partlabel" >&2
+        return 1
+    fi
+    if ! parted "$journal" name 2 "data_${suffix}" >/dev/null 2>&1; then
+        echo  "ERROR: failed to set data partlabel" >&2
+        return 1
+    fi
+    
+    # osddevice and journaldevice are global, so don't call this function inside $()
     osddevice="/dev/disk/by-partlabel/data_${suffix}"
+    journaldevice="/dev/disk/by-partlabel/journal_${suffix}"
     
-    echo "/dev/disk/by-partlabel/journal_${suffix}"
+    # journaldevice seems to work just fine
+    # don't know why, but this is sometimes neeeded or the osddevice link is not created
+    if [ ! -e "$osddevice" ]; then
+        udevadm trigger
+        while [ ! -e "$osddevice" ]; do
+            # the osddevice link can take a few seconds
+            sleep 1
+        done
+    fi
 }
 
 create_journal_separate() {
@@ -227,7 +256,8 @@ create_journal_separate() {
         sleep 1
     done
     
-    echo "$path"
+    # journaldevice is global, so don't call this function inside $()
+    journaldevice="${path}"
 }
 
 create_journal() {
@@ -254,6 +284,14 @@ ddd0() {
     for device in "$@"; do
         if [ -z "$device" ]; then
             echo "USAGE: ddd0 <device>"
+            return 1
+        fi
+        if [ ! -e "$device" ]; then
+            echo "ERROR: device \"$device\" does not exist"
+            return 1
+        fi
+        if [ ! -L "$device" -a ! -b "$device" -a ! -c "$devie" ]; then
+            echo "ERROR: device \"$device\" is not a link or a special file"
             return 1
         fi
         s=$(blockdev --getsize64 "$device")
@@ -283,9 +321,16 @@ if [ ! -e "$osddevice" ]; then
 fi
 
 echo "Creating journal on device $journal for serial $serial"
-journaldevice=$(create_journal "$serial" "$journal")
+# this function sets journaldevice and osddevice, so we don't use $() to avoid a subshell
+create_journal "$serial" "$journal"
 if [ $? != 0 ]; then
     fail "failed to create journal"
+fi
+if [ -z "$journaldevice" -o ! -e "$journaldevice" -o ! -L "$journaldevice" ]; then
+    fail "failed to get journal path... result = \"$journaldevice\""
+fi
+if [ -z "$osddevice" -o ! -e "$osddevice" -o ! -L "$osddevice" ]; then
+    fail "failed to get data device path... result = \"$osddevice\""
 fi
 
 if [ -n "$bcache" ]; then
@@ -313,7 +358,7 @@ ceph osd crush rm osd."$osd_number" 2>&1 | grep -vE "device .* does not appear i
 
 if [ -e "/var/lib/ceph/osd/${cluster}-${osd_number}" ]; then
     count=$(find "/var/lib/ceph/osd/${cluster}-${osd_number}" | wc -l)
-    if [ "$count" != 0 ]; then
+    if [ "$count" != 1 ]; then
         echo "ERROR: \"/var/lib/ceph/osd/${cluster}-${osd_number}\" exists and is not empty"
         echo "    if the data there is junk, simply run:"
         echo "        rm -rf --one-file-system \"/var/lib/ceph/osd/${cluster}-${osd_number}\""
