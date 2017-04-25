@@ -261,7 +261,7 @@ weight=$(echo "scale=4; $s / 1000/1000/1000/1000" | bc)
 echo "Cleaning out device $osddevice"
 ddd0 "$osddevice"
 
-echo "Cleaning out device $journalddevice"
+echo "Cleaning out device $journaldevice"
 ddd0 "$journaldevice"
 
 echo "Creating osd"
