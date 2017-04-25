@@ -65,7 +65,7 @@ fi
 check_deps() {
     abort=false
     
-    cmds=(sgdisk smartctl parted mkfs.xfs diff awk ceph ceph-osd)
+    cmds=(sgdisk smartctl parted mkfs.xfs diff awk ceph ceph-osd bc)
     if [ -n "$bcache" ]; then
         cmds+=(bcache-super-show make-bcache)
     fi
