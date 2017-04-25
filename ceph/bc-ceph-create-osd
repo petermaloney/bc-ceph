@@ -57,6 +57,10 @@ if [ -z "$journal" -o ! -e "$journal" ]; then
     echo "ERROR: journal \"$journal\" does not exist"
     exit 1
 fi
+if [ -z "$serial" ]; then
+    echo "ERROR: serial is required. If the disk does not have a serial, such as a VM, give a fake one eg. \"osd0\" and set -d too"
+    exit 1
+fi
 
 check_deps() {
     abort=false
@@ -224,6 +228,8 @@ if [ -z "$osddevice" ]; then
     if [ -z "$raw_osddevice" ]; then
         raw_osddevice="$osddevice"
     fi
+else
+    raw_osddevice="$osddevice"
 fi
 if [ -z "$osddevice" ]; then
     fail "couldn't find serial for osd device \"$osddevice\""
