@@ -309,11 +309,20 @@ ceph --cluster "$cluster" osd crush add-bucket "$hostname" host 2>&1 | grep -vE 
 ceph osd crush move "$hostname" root=default 2>&1 | grep -vE "no need to move item id .* to location .* in crush map"
 ceph --cluster "$cluster" osd crush add osd."$osd_number" "$weight" host="$hostname"
 
-# TODO: detect which init the system uses, and use that
-touch "/var/lib/ceph/osd/${cluster}-${osd_number}/sysvinit"
+if which systemctl >/dev/null 2>&1; then
+    touch "/var/lib/ceph/osd/${cluster}-${osd_number}/systemd"
+else
+    # using sysvinit even with upstart
+    touch "/var/lib/ceph/osd/${cluster}-${osd_number}/sysvinit"
+fi
 
 chown -R ceph:ceph "/var/lib/ceph/osd/${cluster}-${osd_number}" 
 chown -R ceph:ceph "$(readlink -f "$journaldevice")"
 if [ "$start" = 1 ]; then
-    service ceph start osd.${osd_number}
+    if which systemctl >/dev/null 2>&1; then
+        systemctl start "ceph-osd@${osd_number}"
+    else
+        # using sysvinit even with upstart
+        service ceph start "osd.${osd_number}"
+    fi
 fi
