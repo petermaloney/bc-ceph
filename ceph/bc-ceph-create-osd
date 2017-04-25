@@ -268,8 +268,8 @@ osd_uuid=$(uuidgen)
 osd_number=$(ceph osd create "$osd_uuid")
 
 # some cleanup...
-ceph auth del "osd.$osd_number"
-ceph osd crush rm osd."$osd_number"
+ceph auth del "osd.$osd_number" 2>&1 | grep -vE "entity .* does not exist"
+ceph osd crush rm osd."$osd_number" 2>&1 | grep -vE "device .* does not appear in the crush map"
 
 mkdir -p "/var/lib/ceph/osd/${cluster}-${osd_number}"
 echo "Creating filesystem"
@@ -294,8 +294,8 @@ fi
 
 ceph auth add osd.${osd_number} osd 'allow *' mon 'allow profile osd' -i "/var/lib/ceph/osd/${cluster}-${osd_number}/keyring"
 
-ceph --cluster "$cluster" osd crush add-bucket "$hostname" host
-ceph osd crush move "$hostname" root=default
+ceph --cluster "$cluster" osd crush add-bucket "$hostname" host 2>&1 | grep -vE "bucket.*already exists"
+ceph osd crush move "$hostname" root=default 2>&1 | grep -vE "no need to move item id .* to location .* in crush map"
 ceph --cluster "$cluster" osd crush add osd."$osd_number" "$weight" host="$hostname"
 
 # TODO: detect which init the system uses, and use that
