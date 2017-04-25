@@ -236,21 +236,21 @@ create_journal_separate() {
     fi
     
     # sgdisk 0.8.8 on Ubuntu 14.04 doesn't support "0:..." in the -c option to set a name, so we fallback to this mess
-    old=$(sgdisk -Pp "$journal")
+    local old=$(sgdisk -Pp "$journal")
 
     # this will create a GPT table if there isn't one
     # and it will make the partition and give it a name
     # (all as a dry run, output only)
-    new=$(sgdisk -n 0:0:+"$journal_size" -Pp "$journal")
+    local new=$(sgdisk -n 0:0:+"$journal_size" -Pp "$journal")
 
-    d=$(diff -u0 <(echo "$old") <(echo "$new") | tail -n1)
+    local d=$(diff -u0 <(echo "$old") <(echo "$new") | tail -n1)
     if ! grep -qE "\+[ ]+[0-9]+[ ]+[0-9]+[ ]+[0-9]+[ ]+$(grep -Eo '[0-9]+'<<< "$journal_size")" <<< "$d"; then
         echo "ERROR: the sgdisk name workaround failed... giving up. The diff between old and new partition table:" >&2
         echo "$d" >&2
         return 1
     fi
-    start=$(awk '{print $3}' <<< "$d")
-    end=$(awk '{print $4}' <<< "$d")
+    local start=$(awk '{print $3}' <<< "$d")
+    local end=$(awk '{print $4}' <<< "$d")
     
     parted -s "$journal" mkpart "$name" "$start"s "$end"s >/dev/null 2>&1
     if [ "$?" != 0 ]; then
