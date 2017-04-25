@@ -219,6 +219,7 @@ create_journal_separate() {
     
     parted -s "$journal" mkpart "$name" "$start"s "$end"s >/dev/null 2>&1
     if [ "$?" != 0 ]; then
+        echo "ERROR: creating a partition on \"$journal\" failed. Is there a GPT partition table?" >&2
         return 1
     fi
     
