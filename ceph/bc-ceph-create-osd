@@ -203,6 +203,10 @@ create_journal() {
         return 1
     fi
     
+    while [ ! -e "$path" ]; do
+        sleep 1
+    done
+    
     echo "$path"
 }
 
