@@ -1,8 +1,13 @@
 #!/bin/bash
+#
+# Licensed GNU GPLv2; if you did not recieve a copy of the license, get one at http://www.gnu.org/licenses/gpl-2.0.html
 
 usage() {
     echo "$0 [-j <size>] [-c <cluster>] [-d <osddevice>] [--bcache <cache_device>] [--no-start] --journal <journal-device> <serial>"
     echo "The bcache and journal device are not the partition but the device with the partition table. The partition does not need to exist, and will be created. If a partition exists with a label that matches the serial, it will be used."
+    
+    # TODO: the above comment is wrong about bcache... it does not make a partition
+    # to fix that, I guess we need a new argument for size of bcache device
 }
 
 # journals are supposed to be something like 1GiB, but let's just make some extra... the ssd is too huge anyway and this is still nothing
@@ -53,15 +58,31 @@ if [ -z "$journal" -o ! -e "$journal" ]; then
     exit 1
 fi
 
+check_deps() {
+    abort=false
+    
+    cmds=(sgdisk smartctl parted mkfs.xfs diff awk ceph ceph-osd)
+    if [ -n "$bcache" ]; then
+        cmds+=(bcache-super-show make-bcache)
+    fi
+    for cmd in "${cmds[@]}"; do
+        if ! which "${cmd}" >/dev/null 2>&1; then
+            echo "ERROR: ${cmd} is not installed... aborting" >&2
+            abort=true
+        fi
+    done
+    
+    if [ "$abort" = true ]; then
+        exit 1
+    fi
+}
+
+check_deps
+
 make_bcache() {
     local raw_osddevice="$1"
     local bcache="$2"
     
-    if ! which make-bcache >/dev/null 2>&1; then
-        echo "ERROR: make-bcache is not installed... aborting" >&2
-        exit 1
-    fi
-
     if ! lsmod | grep -q ^bcache; then
         echo "Waiting for bcache kernel module to load (for /sys/fs/bcache to appear)..."
         modprobe bcache
@@ -267,6 +288,7 @@ ceph --cluster "$cluster" osd crush add-bucket "$hostname" host
 ceph osd crush move "$hostname" root=default
 ceph --cluster "$cluster" osd crush add osd."$osd_number" "$weight" host="$hostname"
 
+# TODO: detect which init the system uses, and use that
 touch "/var/lib/ceph/osd/${cluster}-${osd_number}/sysvinit"
 
 chown -R ceph:ceph "/var/lib/ceph/osd/${cluster}-${osd_number}" 
