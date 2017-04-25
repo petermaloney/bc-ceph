@@ -271,6 +271,17 @@ osd_number=$(ceph osd create "$osd_uuid")
 ceph auth del "osd.$osd_number" 2>&1 | grep -vE "entity .* does not exist"
 ceph osd crush rm osd."$osd_number" 2>&1 | grep -vE "device .* does not appear in the crush map"
 
+if [ -e "/var/lib/ceph/osd/${cluster}-${osd_number}" ]; then
+    count=$(find "/var/lib/ceph/osd/${cluster}-${osd_number}" | wc -l)
+    if [ "$count" != 0 ]; then
+        echo "ERROR: \"/var/lib/ceph/osd/${cluster}-${osd_number}\" exists and is not empty"
+        echo "    if the data there is junk, simply run:"
+        echo "        rm -rf --one-file-system \"/var/lib/ceph/osd/${cluster}-${osd_number}\""
+        echo "        umount -l \"/var/lib/ceph/osd/${cluster}-${osd_number}\""
+        exit 1
+    fi
+fi
+
 mkdir -p "/var/lib/ceph/osd/${cluster}-${osd_number}"
 echo "Creating filesystem"
 mkfs.xfs -L "osd.$osd_number" -i size=2048 -l sectsize=4096 -d sectsize=4096 "$osddevice"
