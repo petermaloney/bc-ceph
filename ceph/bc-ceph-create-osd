@@ -187,6 +187,7 @@ create_journal() {
 
     # this will create a GPT table if there isn't one
     # and it will make the partition and give it a name
+    # (all as a dry run, output only)
     new=$(sgdisk -n 0:0:+"$journal_size" -Pp "$journal")
 
     d=$(diff -u0 <(echo "$old") <(echo "$new") | tail -n1)
