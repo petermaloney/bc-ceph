@@ -190,7 +190,7 @@ create_journal() {
     new=$(sgdisk -n 0:0:+"$journal_size" -Pp "$journal")
 
     d=$(diff -u0 <(echo "$old") <(echo "$new") | tail -n1)
-    if ! grep -qE "\+  [0-9]+[ ]+[0-9]+[ ]+[0-9]+[ ]+$(grep -Eo '[0-9]+'<<< "$journal_size")" <<< "$d"; then
+    if ! grep -qE "\+[ ]+[0-9]+[ ]+[0-9]+[ ]+[0-9]+[ ]+$(grep -Eo '[0-9]+'<<< "$journal_size")" <<< "$d"; then
         echo "ERROR: the sgdisk name workaround failed... giving up. The diff between old and new partition table:"
         echo "$d"
         return 1
