@@ -335,7 +335,7 @@ fi
 if [ -z "$journaldevice" -o ! -e "$journaldevice" -o ! -L "$journaldevice" ]; then
     fail "failed to get journal path... result = \"$journaldevice\""
 fi
-if [ -z "$osddevice" -o ! -e "$osddevice" -o ! -L "$osddevice" ]; then
+if [ -z "$osddevice" -o ! -e "$osddevice" ]; then
     fail "failed to get data device path... result = \"$osddevice\""
 fi
 
