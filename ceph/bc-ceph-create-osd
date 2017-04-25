@@ -2,9 +2,15 @@
 #
 # Licensed GNU GPLv2; if you did not recieve a copy of the license, get one at http://www.gnu.org/licenses/gpl-2.0.html
 
+# The osd device will be wiped and all data destroyed.
+# The journal device is handled with more care, and will only create partitions.
+# The partition table will be created if the journal is colocated, but is required to exist already for separate journals.
+# The partition for the separate journal and bcache does not need to exist, and will be created.
+# The bcache and journal device are not the partition but the device with the partition table.
+# The osd device is expected to be a whole disk.
+
 usage() {
     echo "$0 [-j <size>] [-c <cluster>] [-d <osddevice>] [--bcache <cache_device>] [--no-start] [--journal <journal-device>] <serial>"
-    echo "The bcache and journal device are not the partition but the device with the partition table. The partition does not need to exist, and will be created. If a partition exists with a label that matches the serial, it will be used."
     
     # TODO: the above comment is wrong about bcache... it does not make a partition
     # to fix that, I guess we need a new argument for size of bcache device
