@@ -3,7 +3,7 @@
 # Licensed GNU GPLv2; if you did not recieve a copy of the license, get one at http://www.gnu.org/licenses/gpl-2.0.html
 
 usage() {
-    echo "$0 [-j <size>] [-c <cluster>] [-d <osddevice>] [--bcache <cache_device>] [--no-start] --journal <journal-device> <serial>"
+    echo "$0 [-j <size>] [-c <cluster>] [-d <osddevice>] [--bcache <cache_device>] [--no-start] [--journal <journal-device>] <serial>"
     echo "The bcache and journal device are not the partition but the device with the partition table. The partition does not need to exist, and will be created. If a partition exists with a label that matches the serial, it will be used."
     
     # TODO: the above comment is wrong about bcache... it does not make a partition
@@ -18,6 +18,7 @@ osddevice=
 bcache=
 journal=
 start=1
+colocated=false
 
 while [ "$#" != 0 ]; do
     if [ "$1" = "-j" ]; then
@@ -49,16 +50,17 @@ hostname=$(hostname -s)
 raw_osddevice="$osddevice"
 
 if [ -z "$journal" ]; then
-    echo "ERROR: journal is required"
-    usage
-    exit 1
+    colocated=true
+    journal="$osddevice"
 fi
-if [ -z "$journal" -o ! -e "$journal" ]; then
+if [ -n "$journal" -a ! -e "$journal" ]; then
     echo "ERROR: journal \"$journal\" does not exist"
+    usage
     exit 1
 fi
 if [ -z "$serial" ]; then
     echo "ERROR: serial is required. If the disk does not have a serial, such as a VM, give a fake one eg. \"osd0\" and set -d too"
+    usage
     exit 1
 fi
 
@@ -162,16 +164,32 @@ find_by_serial() {
     echo "$device"
 }
 
-create_journal() {
-    local serial="$1"
+create_journal_colocated() {
+    local suffix="$1"
     local journal="$2"
-
-    local suffix=
-    if [ "${serial:0:4}" = "/dev" ]; then
-        suffix=$(tr / _ <<< "${serial:5}")
-    else
-        suffix="$serial"
+    
+    if ! parted -s "$journal" print | grep -Eq "Partition Table: gpt"; then
+        # if no partition table, make one
+        parted -s "$journal" mktable gpt
     fi
+    
+    lines=$(parted /dev/rbd0 -sm print | wc -l)
+    if [ "$lines" -gt 2 ]; then
+        echo "ERROR: The colocated journal+osd device already has partitions. Aborting." >&2
+        return 1
+    fi
+    
+    sgdisk -n 0:0:+"$journal_size" "$journal" || fail "failed to create journal partition"
+    sgdisk -n 0:0:-0 "$journal" || fail "failed to create osd data partition"
+    
+    osddevice="/dev/disk/by-partlabel/data_${suffix}"
+    
+    echo "/dev/disk/by-partlabel/journal_${suffix}"
+}
+
+create_journal_separate() {
+    local suffix="$1"
+    local journal="$2"
 
     local name="journal_${suffix}"
     local path="/dev/disk/by-partlabel/${name}"
@@ -211,6 +229,26 @@ create_journal() {
     echo "$path"
 }
 
+create_journal() {
+    local serial="$1"
+    local journal="$2"
+    
+    local suffix=
+    if [ "${serial:0:4}" = "/dev" ]; then
+        suffix=$(tr / _ <<< "${serial:5}")
+    else
+        suffix="$serial"
+    fi
+
+    if [ "$colocated" = true ]; then
+        create_journal_colocated "$suffix" "$journal"
+        return $?
+    else
+        create_journal_separate "$suffix" "$journal"
+        return $?
+    fi
+}
+
 ddd0() {
     for device in "$@"; do
         if [ -z "$device" ]; then
@@ -246,7 +284,7 @@ fi
 echo "Creating journal on device $journal for serial $serial"
 journaldevice=$(create_journal "$serial" "$journal")
 if [ $? != 0 ]; then
-    exit 1
+    fail "failed to create journal"
 fi
 
 if [ -n "$bcache" ]; then
