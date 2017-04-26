@@ -193,6 +193,20 @@ create_journal_colocated() {
         fi
     fi
     
+    # osddevice and journaldevice are global, so don't call this function inside $()
+    osddevice="/dev/disk/by-partlabel/data_${suffix}"
+    journaldevice="/dev/disk/by-partlabel/journal_${suffix}"
+
+    # we check the labels separate from the device in case another device has the same labels
+    if [ -e "$journaldevice" ]; then
+        echo "ERROR: osd journal already exists: $name" >&2
+        return 1
+    fi
+    if [ -e "$osddevice" ]; then
+        echo "ERROR: osd data partition already exists: $name" >&2
+        return 1
+    fi
+    
     lines=$(parted "$journal" -sm print | wc -l)
     if [ "$lines" -gt 2 ]; then
         echo "ERROR: The colocated journal+osd device already has partitions. Aborting." >&2
@@ -216,10 +230,6 @@ create_journal_colocated() {
         echo  "ERROR: failed to set data partlabel" >&2
         return 1
     fi
-    
-    # osddevice and journaldevice are global, so don't call this function inside $()
-    osddevice="/dev/disk/by-partlabel/data_${suffix}"
-    journaldevice="/dev/disk/by-partlabel/journal_${suffix}"
     
     # journaldevice seems to work just fine
     # don't know why, but this is sometimes neeeded or the osddevice link is not created
