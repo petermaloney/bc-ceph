@@ -1,38 +1,52 @@
 #!/bin/bash -u
+#
+# Licensed GNU GPLv2; if you did not recieve a copy of the license, get one at http://www.gnu.org/licenses/gpl-2.0.html
 
 cluster=ceph
 hostname=$(hostname -s)
 
 ip=$(getent hosts "$hostname" | awk '{print $1}')
 
-#if ! grep -qE "mon initial members.*${hostname}" /etc/ceph/ceph.conf; then
-#    echo "ERROR: mon is not in \"mon initial members\" in ceph.conf... aborting"
-#    exit 1
-#fi
-#if ! grep -qE "mon host.*${ip}" /etc/ceph/ceph.conf; then
-#    echo "ERROR: mon is not in \"mon host\" in ceph.conf... aborting"
-#    exit 1
-#fi
+check_files() {
+    # TODO: to support multiple clusters, the monmap file also needs the cluster name prefixed
+    files_required=("/etc/ceph/${cluster}.conf", "/etc/ceph/${cluster}.client.admin.keyring", "/etc/ceph/${cluster}.mon.keyring", "/etc/ceph/monmap") 
+    file_missing=false
+    for f in "${files_required[@]}"; do
+        if [ ! -e "$f" ]; then
+            echo "ERROR: could not find file \"$f\""
+            file_missing=true
+        fi
+    done
+    if [ "$file_missing" = true ]; then
+        exit 1
+    fi
+}
+check_files
+
 if [ -e "/var/lib/ceph/mon/${cluster}-${hostname}" ]; then
     echo "ERROR: mon dir already exists: /var/lib/ceph/mon/${cluster}-${hostname}"
     exit 1
 fi
 
-ceph-mon --mkfs -i "${hostname}" --monmap /etc/ceph/monmap --keyring /etc/ceph/ceph.mon.keyring
+ceph-mon --mkfs --cluster "${cluster}" -i "${hostname}" --monmap /etc/ceph/monmap --keyring "/etc/ceph/${cluster}.mon.keyring"
 touch "/var/lib/ceph/mon/${cluster}-${hostname}/done"
-touch "/var/lib/ceph/mon/${cluster}-${hostname}/sysvinit"
+if which systemctl >/dev/null 2>&1; then
+    touch "/var/lib/ceph/mon/${cluster}-${hostname}/systemd"
+else
+    touch "/var/lib/ceph/mon/${cluster}-${hostname}/sysvinit"
+fi
 chown -R ceph:ceph "/var/lib/ceph/mon/${cluster}-${hostname}"
 
-## now add the monitor in ceph.conf (but will get overwritten by puppet)
-#sed -i -r \
-#    -e "s/(mon initial members = .*)/\1 $hostname/" \
-#    -e "s/(mon host = .*)/\1 $ip/" \
-#    /etc/ceph/ceph.conf
-
 # start the mon before adding to monmap, or bad things happen until you fix it (basically any ceph command fails)
-service ceph start mon
+if which systemctl >/dev/null 2>&1; then
+    systemctl start "ceph-mon@${hostname}"
+else
+    service ceph start mon
+fi
 
 # add to monmap
 echo ceph mon add "$hostname" "$ip"
 ceph mon add "$hostname" "$ip"
 
+echo "Done"
+echo "REMINDER: you still have to add this mon to mon_initial_members and mon_host in ceph.conf on all nodes"
