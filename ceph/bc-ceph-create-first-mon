@@ -1,8 +1,6 @@
 #!/bin/bash -u
-
-###########################################################################
-# WARNING: this file is managed by puppet; your changes will be overwritten
-###########################################################################
+#
+# Licensed GNU GPLv2; if you did not recieve a copy of the license, get one at http://www.gnu.org/licenses/gpl-2.0.html
 
 hostname=$(hostname -s)
 ip=$(getent hosts "$hostname" | awk '{print $1}')
@@ -20,11 +18,11 @@ fi
 
 tmp=/var/lib/ceph/tmp
 # these paths are overwritten by puppet
-monring2=/etc/ceph/ceph.mon.keyring
-adminring2=/etc/ceph/ceph.client.admin.keyring
+monring2="/etc/ceph/${cluster}.mon.keyring"
+adminring2="/etc/ceph/${cluster}.client.admin.keyring"
 # these paths are not overwritten by puppet
-adminring="$tmp"/ceph.client.admin.keyring
-monring="$tmp"/ceph.mon.keyring
+adminring="${tmp}/${cluster}.client.admin.keyring"
+monring="${tmp}/${cluster}.mon.keyring"
 
 ceph-authtool --create-keyring "$monring" --gen-key -n mon. --cap mon 'allow *'
 ceph-authtool --create-keyring "$adminring" --gen-key -n client.admin --set-uid=0 --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *'
@@ -35,12 +33,20 @@ mkdir -p "/var/lib/ceph/mon/${cluster}-${hostname}"
 ceph-mon --mkfs -i "${hostname}" --monmap "$tmp"/monmap --keyring "$monring"
 
 touch "/var/lib/ceph/mon/${cluster}-${hostname}/done"
-touch "/var/lib/ceph/mon/${cluster}-${hostname}/sysvinit"
+if which systemctl >/dev/null 2>&1; then
+    touch "/var/lib/ceph/mon/${cluster}-${hostname}/systemd"
+else
+    touch "/var/lib/ceph/mon/${cluster}-${hostname}/sysvinit"
+fi
 
-chown -R ceph:ceph /var/lib/ceph/mon/*
+chown -R ceph:ceph "/var/lib/ceph/mon/${cluster}-${hostname}"
 
 cp "$monring" "$monring2"
 cp "$adminring" "$adminring2"
 
-service ceph start mon
+if which systemctl >/dev/null 2>&1; then
+    systemctl start "ceph-mon@${hostname}"
+else
+    service ceph start mon
+fi
 
