@@ -208,11 +208,11 @@ create_journal_colocated() {
         return 1
     fi
     
-    if ! parted "$journal" name 1 "journal_${suffix}" >/dev/null 2>&1; then
+    if ! parted -s "$journal" name 1 "journal_${suffix}" >/dev/null 2>&1; then
         echo  "ERROR: failed to set journal partlabel" >&2
         return 1
     fi
-    if ! parted "$journal" name 2 "data_${suffix}" >/dev/null 2>&1; then
+    if ! parted -s "$journal" name 2 "data_${suffix}" >/dev/null 2>&1; then
         echo  "ERROR: failed to set data partlabel" >&2
         return 1
     fi
