@@ -134,6 +134,9 @@ make_bcache() {
     
     # attach cache
     cache_found=($(stat -c %n /dev/disk/by-partlabel/*-bcache))
+    
+    # TODO: this code is old, and was assuming there was just 1 cache, and ignores the disk specified by --bcache. Instead, look at all partitions on the disk specified and use the first with a bcache header and type cache
+    
     if [ "${#cache_found[@]}" != 1 ]; then
         echo "ERROR: expected 1 cache device /dev/disk/by-partlabel/*-bcache but found:" >&2
         ls -l /dev/disk/by-partlabel/*-bcache >&2
