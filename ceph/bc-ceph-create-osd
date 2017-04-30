@@ -121,11 +121,7 @@ make_bcache() {
     echo "$raw_osddevice" > /sys/fs/bcache/register 2>/dev/null
     
     
-    ## FIXME: this link disappears after some time... so don't trust it. Find out the /dev/bacheX name another way.
-    #bcache_dev_uuid=$(bcache-super-show "$raw_osddevice" | awk '$1=="dev.uuid"{print $2}')
-    #osddevice=/dev/bcache/by-uuid/"$bcache_dev_uuid"
-    
-    ## Tesing this fix
+    ## the /dev/bcache/by-uuid/ links are unreliable, so use this method
     disk_name=$(basename "$(readlink -f "$raw_osddevice")")
     bcache_name=$(basename "$(readlink -f "/sys/block/${disk_name}/bcache/dev")")
     # osddevice is global
@@ -137,19 +133,34 @@ make_bcache() {
 
     
     # attach cache
-    cache_found=($(stat -c %n /dev/disk/by-partlabel/*-bcache))
+    cache_found=
     
-    # TODO: this code is old, and was assuming there was just 1 cache, and ignores the disk specified by --bcache. Instead, look at all partitions on the disk specified and use the first with a bcache header and type cache
-    
-    if [ "${#cache_found[@]}" != 1 ]; then
-        echo "ERROR: expected 1 cache device /dev/disk/by-partlabel/*-bcache but found:" >&2
-        ls -l /dev/disk/by-partlabel/*-bcache >&2
+    csetuuid=$(bcache-super-show "$bcache" 2>/dev/null | awk '$1 == "cset.uuid" {print $2}')
+    table=$(parted -s "$bcache" print 2>/dev/null | awk -F": " '$1 == "Partition Table"{print $2}')
+    if [ -n "$csetuuid" ]; then
+        # if bcache device has bcache header, use it
+        :
+    elif [ "$table" = "gpt" -o "$table" = "msdos" ]; then
+        # if bcache device is partitioned, use first found device with label ending in "bcache", eg. "ssd1-bcache"
+        cbcache=$(readlink -f "$bcache")
+        for d in $(stat -c %n /dev/disk/by-partlabel/*-bcache); do
+            target=$(readlink -f "$d")
+            if grep -Eq "^${cbcache}[0-9]+$" <<< "$target"; then
+                csetuuid=$(bcache-super-show "$target" | awk '$1 == "cset.uuid" {print $2}')
+                break
+            fi
+        done
+        if [ -z "$csetuuid" ]; then
+            echo "ERROR: failed to find bcache device on partitioned device \"$bcache\"" >&2
+            return 1
+        fi
+    else
+        # else fail
+        echo "ERROR: \"$bcache\" is neither a partitioned device nor a bcache cache device." >&2
         return 1
     fi
     
-    csetuuid=$(bcache-super-show "${cache_found[0]}" | awk '$1 == "cset.uuid" {print $2}')
     echo "$csetuuid" > "/sys/block/${bcache_name}/bcache/attach"
-    
     echo writeback > "/sys/block/${bcache_name}/bcache/cache_mode"
 }
 
