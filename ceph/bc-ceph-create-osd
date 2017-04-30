@@ -11,7 +11,7 @@
 # If you use a serial, make sure it's unique as seen by smartctl or it will break something. Use -d to override the osddevice and set a custom serial if they aren't unique.
 
 usage() {
-    echo "$0 [-w <weight>] [-j <size>] [-c <cluster>] [-d <osddevice>] [--bcache <cache_device>] [--no-start] [--journal <journal-device>] <serial>"
+    echo "$0 [--fs {xfs|ext4|btrfs}] [-w <weight>] [-j <size>] [-c <cluster>] [-d <osddevice>] [--bcache <cache_device>] [--no-start] [--journal <journal-device>] <serial>"
     
     # TODO: the above comment is wrong about bcache... it does not make a partition
     # to fix that, I guess we need a new argument for size of bcache device
@@ -27,6 +27,7 @@ bcache=
 journal=
 start=1
 colocated=false
+fs=xfs
 
 while [ "$#" != 0 ]; do
     if [ "$1" = "-j" ]; then
@@ -49,6 +50,9 @@ while [ "$#" != 0 ]; do
         shift
     elif [ "$1" = "--no-start" ]; then
         start=0
+    elif [ "$1" = "--fs" ]; then
+        fs="$2"
+        shift
     else
         args+=("$1")
     fi
@@ -403,7 +407,26 @@ fi
 
 mkdir -p "/var/lib/ceph/osd/${cluster}-${osd_number}"
 echo "Creating filesystem"
-mkfs.xfs -L "osd.$osd_number" -i size=2048 -l sectsize=4096 -d sectsize=4096 "$osddevice"
+if [ "$fs" = "xfs" ]; then
+    mkfs.xfs -L "osd.$osd_number" -i size=2048 -l sectsize=4096 -d sectsize=4096 "$osddevice"
+    fs_options="noatime,nodiratime,logbsize=256k,logbufs=8,inode64,nofail"
+elif [ "$fs" = "ext4" ]; then
+    # TODO: figure out what else is needed... mkfs options, mount options, ceph.conf options
+    # -F is needed to do it on a whole device
+    mkfs.ext4 -F -L "osd.$osd_number" "$osddevice"
+    fs_options="noatime,nodiratime,nofail,user_xattr,journal_async_commit"
+elif [ "$fs" = "btrfs" ]; then
+    # TODO: figure out what else is needed... mkfs options, mount options, ceph.conf options
+    # I took -l and -n suggestions from http://ceph.com/community/ceph-performance-part-2-write-throughput-without-ssd-journals/
+    mkfs.btrfs -l 16k -n 16k -L "osd.$osd_number" "$osddevice"
+    fs_options="noatime,nodiratime,user_subvol_rm_allowed,nofail"
+    
+    # also for some reason this config ends up false, but it is probably supposed to be true for btrfs. Is that a conf option, or is it supposed to be auto-detected?
+    #        "filestore_journal_parallel": "false",
+
+else
+    echo "ERROR: unsupported fs \"$fs\""
+fi
 
 # for mount, doc said to use '-o user_xattr', but my machine says that's unknown for xfs
 xfs_uuid=$(blkid -o value -s UUID "$osddevice")
@@ -412,7 +435,7 @@ if [ -z "$xfs_uuid" ]; then
     exit 1
 fi
 sed -i -r "s|(.*/var/lib/ceph/osd/${cluster}-${osd_number}[^0-9].*)|#\1|" /etc/fstab
-echo "UUID=$xfs_uuid /var/lib/ceph/osd/${cluster}-${osd_number} xfs noatime,nodiratime,logbsize=256k,logbufs=8,inode64,nofail 0 2" >> /etc/fstab
+echo "UUID=$xfs_uuid /var/lib/ceph/osd/${cluster}-${osd_number} ${fs} ${fs_options} 0 2" >> /etc/fstab
 mount "/var/lib/ceph/osd/${cluster}-${osd_number}" || fail "couldn't mount osd data dir"
 
 ceph-osd -i ${osd_number} --osd-journal="$journaldevice" --mkfs --mkkey --osd-uuid "$osd_uuid"
