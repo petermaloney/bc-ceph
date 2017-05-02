@@ -17,9 +17,6 @@
 usage() {
     echo "$0 [--store {xfs|ext4|btrfs|bluestore}] [-w <weight>] [-j <size>] [-c <cluster>] [-d <osddevice>] [--bcache <cache_device>] [--no-start] [--journal <journal-device>] <serial>"
     
-    # TODO: the above comment is wrong about bcache... it does not make a partition
-    # to fix that, I guess we need a new argument for size of bcache device
-    
     # TODO: currently --journal specifies the device for wal and db for bluestore. Separate wal and db block device and size --wal --db --wal-size --db-size
 }
 
