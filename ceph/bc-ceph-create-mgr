@@ -1,0 +1,27 @@
+#!/bin/bash -u
+#
+# Licensed GNU GPLv2; if you did not recieve a copy of the license, get one at http://www.gnu.org/licenses/gpl-2.0.html
+
+cluster=ceph
+hostname=$(hostname -s)
+
+mkdir -p "/var/lib/ceph/mgr/${cluster}-$hostname"
+ceph auth get-or-create "mgr.$hostname" mon 'allow profile mgr' osd 'allow *' mds 'allow *' | tee "/var/lib/ceph/mgr/${cluster}-${hostname}"/keyring
+
+if which systemctl >/dev/null 2>&1; then
+    touch "/var/lib/ceph/mgr/${cluster}-$hostname/systemd"
+else
+    touch "/var/lib/ceph/mgr/${cluster}-$hostname/sysvinit"
+fi
+
+chown -R ceph:ceph "/var/lib/ceph/mgr/${cluster}-${hostname}"
+
+# start the mon before adding to monmap, or bad things happen until you fix it (basically any ceph command fails)
+if which systemctl >/dev/null 2>&1; then
+    systemctl start "ceph-mgr@${hostname}"
+    systemctl enable "ceph-mgr@${hostname}"
+else
+    service ceph start mgr
+fi
+
+echo "Done"

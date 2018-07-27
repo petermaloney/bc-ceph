@@ -1,0 +1,17 @@
+"/var/log/bc-ceph_repl.log" {
+    rotate 20
+    size 1
+    su root syslog
+}
+
+"/var/log/bc-ceph_repl_cleanup.log" {
+    rotate 20
+    size 1
+    su root syslog
+}
+
+"/var/log/bc-ceph_snaprotator.log" {
+    rotate 20
+    size 1
+    su root syslog
+}

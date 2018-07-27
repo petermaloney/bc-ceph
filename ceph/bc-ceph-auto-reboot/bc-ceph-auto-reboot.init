@@ -1,0 +1,178 @@
+#!/bin/bash
+#
+# Author: Peter Maloney
+# Starts a daemon, and forcibly kills it by pid when stopping; it is crude, but this way you avoid the errors shutting it down like you see with other scripts, and it's an easy way to make it generic, so when you get a broken one by default, you can replace it with this without much effort.
+#
+# eg.
+#  does not stop properly
+#    root@bcsmos2:# /etc/init.d/apache_ftp stop
+#    /etc/init.d/apache_ftp: 84: Stoppen per kill /opt/apache-ftpserver-1.0.6: not found
+#
+#  does not start properly
+#    root@bcvm1:# eetc/init.d/smartmontools start
+#    root@bcvm1:# echo $?
+#    0
+#    /etc/init.d/smartmontools status
+#    smartd is not running ... failed!
+
+### BEGIN INIT INFO
+# Provides:             bc-ceph-auto-reboot
+# Required-Start:       $remote_fs $syslog postfix
+# Required-Stop:        $remote_fs $syslog
+# Default-Start:        2 3 4 5
+# Default-Stop:
+# Short-Description:    BC script for automatically rebootoing ceph often enough that bcache doesn't hang
+### END INIT INFO
+
+# ==============================
+#  User configurable settings
+# ==============================
+
+# the home directory of the app (this becomes the PWD before starting the daeomon)
+daemonHome=/tmp
+logFile=/dev/null
+user=root
+
+# the absolute path or relative path from daemonHome to the command to start, excluding arguments
+startCommand=/usr/local/bin/bc-ceph-auto-reboot.py
+IFS=$' '
+
+# normal settings
+args=(-d --logging syslog)
+
+# temporary for easter weekend
+#args=(-d -x 15 --days "tue-thurs" --times "10:00-18:00" --shutdown-time "+1" --logging syslog)
+
+# text to look for in the stdout to decide if the server is done starting; 
+# if you leave it blank, "/etc/init.d/... start" will return faster without blocking until it was successful
+startWaitMessage="Starting server..."
+
+pidFile=/var/run/bc-ceph-auto-reboot.pid
+
+# ==============================
+# Customizable functions
+# ==============================
+
+pid=
+
+#required; when implementing this, you must set the "pid" global variable
+# the default is mostly generic, but assumes things
+mystart() {
+    if [ -f "${logFile}" ]; then
+        rm "${logFile}"
+    fi
+   
+    # Change to the directory, because the xml path is relative from the current directory; you can't specify starting with /... or it changes it to `pwd`/...
+    cd "${daemonHome}"
+    if [ "$user" = root ]; then
+        nohup "$startCommand" "${args[@]}" >"${logFile}" 2>&1 &
+        pid=$!
+    else
+        sudo -u "${user}" nohup "$startCommand" "${args[@]}" >"${logFile}" 2>&1 &
+        pid=$!
+    fi
+
+    if [ "${logFile}" != "/dev/null" -a -n "$startWaitMessage" ]; then 
+        until [ -f "${logFile}" ]; do
+            sleep 0.1
+        done
+       
+        tail -F "${logFile}" &
+        tailpid=$!
+        
+        until grep "$startWaitMessage" "${logFile}"; do
+            sleep 0.1
+        done
+        
+        kill $tailpid
+    fi
+}
+
+#optional customized stop function, for when kill is not enough
+mystop() {
+    return 1 #not implemented
+}
+
+#optional customized status function, for when a simple "running" message with pid is not enough
+mystatus() {
+    return 1 #not implemented
+}
+
+# ==============================
+# main - generic... should not need changes
+# ==============================
+
+start() {
+    if [ -f "${pidFile}" ]; then
+        pid=$(cat "${pidFile}")
+        if [ -d /proc/$pid ]; then
+            echo "ERROR: already running; pid = $pid"
+            return 1
+        fi
+    fi
+    
+    echo Starting
+    mystart
+    if [ "$pid" = "" ]; then
+        echo "ERROR: pid was not set"
+    else
+        echo $pid > "${pidFile}"
+    fi
+}
+
+stop() {
+    echo Stopping
+    
+    if mystop; then
+        echo Stopped
+    elif [ '!' -f "${pidFile}" ]; then
+        echo "ERROR: pid file not found"
+    else
+        pid=$(cat "${pidFile}")
+        pids=$(ps -ef | sed -r "s/[ ]{2,}/ /g" | cut -d' ' -f2-3 | grep $pid | cut -d' ' -f1 | xargs echo)
+        
+        echo "Killing pids: $pids"
+        kill $pids
+        
+        while [ "$pids" != "" ]; do
+            for pid in $pids; do
+                if [ '!' -d /proc/$pid ]; then
+                    pids=$(echo $pids | sed -r "s/$pid//" | sed -r "s/[ ]{2,}/ /g")
+                fi
+            done
+            if [ "$pids" != "" ]; then
+                echo "Waiting for pids $pids"
+                sleep 1
+            fi
+        done
+        
+        rm "${pidFile}"
+    fi
+}
+
+status() {
+    if mystatus; then
+        echo Done
+    elif [ '!' -f "${pidFile}" ]; then
+        echo "pid file not found, assume it is not running"
+    elif [ -e /proc/$(cat "${pidFile}") ]; then
+        pid=$(cat "${pidFile}")
+        echo "Running; pid = $pid"
+    else
+        pid=$(cat "${pidFile}")
+        echo "Stale pid file found; Not running; pid = $pid"
+    fi
+}
+
+restart() {
+    echo Restarting
+    stop
+    start
+}
+
+case "$1" in
+    start) start ;;
+    stop)  stop ;;
+    restart) restart ;;
+    status) status ;;
+esac

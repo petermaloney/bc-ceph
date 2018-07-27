@@ -1,0 +1,76 @@
+#!/bin/bash
+#
+# lists pgs,
+# converts the date so it has no space (so column -t and other things work)
+# filters that the "up" and "acting" columns are not equal
+# it might not list some non-undersized pgs that are still bad in some way
+
+datefix() {
+    sed -r 's|([0-9]{4}-[0-9]{2}-[0-9]{2})[ ]+([0-9]{2}:[0-9]{2}:[0-9]{2}[.0-9]+)|\1T\2|g'
+}
+
+onlypgs() {
+    # show only the pg lines, not whatever the rest is
+    #awk '$1=="pg_stat" || $1 ~ /^[0-9a-f]+.[0-9a-f]/'
+    
+    # experimental new version...should quit earlier, which is possibly better
+    # jewel has "pg_stat" and kraken has "PG_STAT"
+    awk 'BEGIN{found=0}; found && $1 !~ /^[0-9a-f]+.[0-9a-f]/ {exit 0}; $1=="pg_stat" || $1=="PG_STAT" {found=1}; found'
+}
+
+pg_dump() {
+    ceph pg dump | datefix | onlypgs
+}
+
+# also filtering out some less interesting columns to fit on the screen width
+shorten() {
+    if [ "$short" = true ]; then
+        awk '{print $1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "$10" "$11" "$14" "$16}' | column -t
+    else
+        column -t
+    fi
+}
+
+# lists any non-optimal
+filter_nonoptimal() {
+    awk '$4 != 0 || $5 != 0 || $14 != $16'
+}
+
+# lists any non-optimal and also scrub and maybe some other states
+# for now we'll call that "busy"
+filter_busy() {
+    awk '$10 != "active+clean" {print $0}'
+}
+
+usage() {
+    echo "$0 { [-a|--all] | [-b|--busy] } [-s|--short]"
+}
+
+all=false
+short=false
+busy=false
+
+while [ "$#" != 0 ]; do
+    if [ "$1" = "-a" -o "$1" = "--all" ]; then
+        all=true
+    elif [ "$1" = "-s" -o "$1" = "--short" ]; then
+        short=true
+    elif [ "$1" = "-b" -o "$1" = "--busy" ]; then
+        busy=true
+    fi
+    shift
+done
+
+if [ "$all" = true -a "$busy" = true ]; then
+    echo "ERROR: Can't use --all and --busy together"
+    exit 1
+fi
+
+if [ "$all" = true ]; then
+    pg_dump | shorten
+elif [ "$busy" = true ]; then
+    pg_dump | filter_busy | shorten
+else
+    pg_dump | filter_nonoptimal | shorten
+fi
+

@@ -1,0 +1,67 @@
+#!/bin/bash
+#
+# bc-ceph-versions
+# Author: Peter Maloney
+#
+# prints a summary of all the versions of the binary (current machine only), and all daemons
+
+verbose=false
+test=false
+
+usage() {
+    echo "$0 [-v] [--test]"
+}
+
+while [ "$#" != 0 ]; do
+    if [ "$1" = "-v" ]; then
+        verbose=true
+    elif [ "$1" = "--test" ]; then
+        test=true
+    elif [ "$1" = "--help" ]; then
+        usage
+        exit 1
+    fi
+    shift
+done
+
+data=$(
+    ceph tell osd.* version | awk '/^osd\./ {printf $0; getline; printf $0; getline; print$0}' | awk -F ':? ' '{print $1 " " $9}'
+    ceph tell mon.* version | awk -F ':? ' '{print $1 " " $4}'
+)
+
+if [ "$test" = true ]; then
+    echo "TEST MODE"
+    last_osd=$(awk -F'\.| ' '$1=="osd" {print $2}' <<< "$data" | sort -n | tail -n1)
+    testdata="$data"$'\n'"osd.$((last_osd+1)) 10.2.8"$'\n'"osd.$((last_osd+2)) 10.2.9"$'\n'"osd.$((last_osd+3)) 10.2.9"
+    data="$testdata"
+fi
+
+if [ "$verbose" = true ]; then
+    echo "All versions:"
+    echo "$data"
+    echo
+fi
+
+# find counts of versions, sorted by version
+versions=$(awk '{print $2}' <<< "$data" | sort | uniq -c | sort -k1n | sort -V -k2)
+version_count=$(wc -l <<< "$versions")
+
+if [ "$version_count" != 1 ]; then
+    most_common_version=$(sort -k1n <<< "$versions" | tail -n1 | awk '{print $2}')
+    other_versions_data=$(awk -v c="$most_common_version" '$2 != c' <<< "$data")
+fi
+
+echo "Command version: $(ceph -v | awk '{print $3}')"
+echo
+echo "Version counts:"
+echo "$versions"
+echo
+
+if [ "$version_count" != 1 ]; then
+    echo "Most use verion $most_common_version"
+    echo
+    echo "Others:"
+    echo "$other_versions_data"
+    echo
+fi
+

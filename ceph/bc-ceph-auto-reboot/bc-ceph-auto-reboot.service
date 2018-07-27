@@ -1,0 +1,10 @@
+[unit]
+Description=bc-ceph-auto-reboot
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/bc-ceph-auto-reboot.py
+
+[Install]
+WantedBy=multi-user.target
+

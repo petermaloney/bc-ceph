@@ -1,0 +1,208 @@
+============
+Description:
+============
+
+some quick and easy ceph setup scripts
+
+supports:
+- xfs filestore
+- bcache
+- separate and colocated journals
+- also it supports ext4 and btrfs, but I don't have real experience with these for ceph.
+- also for testing it supports bluestore (with hardcoded db and wal sizes, minimal to fit on small VMs, not real clusters)
+- disk lookup by serial number (no dynamically changing names like /dev/sdb) (intended to be used with an HBA, not hwraid; but there is special support to work without serials too)
+
+intended to be used by puppet, other orchestration software, or manually (great for VM test clusters)
+
+Author: Peter Maloney
+
+Brockmann Consult GmbH
+http://brockmann-consult.de/
+
+============
+Requirements:
+============
+
+For bcache and kernels, I recommend at least:
+    ubuntu - kernel 4.4.0 from 16.04 xenial (it is in the 14.04 trusty repos)
+    centos 7 - kernel 4.10 from elrepo.org (see "centos 7 bcache" section below)
+    vanilla kernel 4.9.0
+
+============
+Assumptions:
+============
+
+osds without colocated journals to be on raw disks, not partitions
+
+osds with colocated journals have GPT partitions, with journal first on disk
+
+journal devices have GPT partitions (specify whole device)
+
+bcache
+    devices have GPT partitions (specify whole device), or you have to specify the exact device
+    cache_mode is writeback
+    sharing a single cache per SSD
+
+all osd,mon,mds nodes have the admin keyring
+
+permission settings are done elsewhere, such as a udev rule that matches some GPT type ids you set elsewhere, or an init script like in init/bc-ceph-init*
+
+there is no "admin client"... instead, every osd, mon, mds is an admin client. (not ideal, but currently it works that way; feel free to send pull requests to change it)
+
+============
+usage:
+============
+
+start with:
+    empty nodes with ceph packages installed, or install now, modify the example here, or see http://docs.ceph.com/docs/master/install/get-packages/
+        wget -q -O- 'https://download.ceph.com/keys/release.asc' | sudo apt-key add -
+        echo "deb https://download.ceph.com/debian-jewel/ trusty main" > /etc/apt/sources.list.d/ceph.list
+        apt-get update
+        apt-cache policy ceph
+            #see which version is available
+        apt-get install ceph
+    
+    other commands that are optional depending on your usage: 
+        sgdisk (gdisk package)
+        parted
+        mkfs.xfs (xfsprogs package)
+        diff
+        awk
+        bc
+        bcache-super-show (bcache-tools package)
+        make-bcache (bcache-tools package)
+        smartctl (smartmontools package)
+
+        apt-get install gdisk parted xfsprogs bc bcache-tools smartmontools
+        
+manual preparation:
+    get a root shell
+
+    create a ceph.conf (with only one mon)
+        vim /etc/modules/puppet/ceph/files/etc/ceph/ceph.conf
+            [global]
+            fsid = {cluster_id}
+            mon initial members = {hostname}
+            mon host = {ip_address}
+            public network = {public_network}
+            cluster network = {cluster_network}
+            auth cluster required = cephx
+            auth service required = cephx
+            auth client required = cephx
+            osd journal size = 1024
+            osd pool default size = 3
+            osd pool default min size = 2
+            osd pool default pg num = 64
+            osd pool default pgp num = 64
+            osd crush chooseleaf type = 1
+
+
+        # set the values yourself, or let the following script do these 2
+        uuid=$(uuidgen)
+        hostname=$(hostname -s)
+        
+        sed -i \
+            -e "s|{cluster_id}|$uuid|" \
+            -e "s|{hostname}|$hostname|" \
+            /etc/modules/puppet/ceph/files/etc/ceph/ceph.conf
+
+    set all your hosts in the /etc/hosts file
+        vim /etc/hosts
+            10.x.y.z1 ceph1
+            10.x.y.z2 ceph2
+            10.x.y.z3 ceph3
+            
+    run the bc-create-first-mon script on the first mon machine
+        ./bc-ceph-create-first-mon
+    
+    this generated some files:
+        /etc/ceph/ceph.client.admin.keyring
+        /etc/ceph/monmap
+        
+deploy some puppet, ansible, chef, etc. configuration to push these files:
+    push to all mons, osds, and mds servers:
+        /etc/ceph/ceph.conf
+        /etc/ceph/ceph.client.admin.keyring
+    push to all mons:
+        /etc/ceph/monmap
+
+run the mon script on mons
+    ./bc-ceph-create-mon
+
+add the rest of the mons to ceph.conf
+
+collect osd serial numbers, device paths, etc. from nodes. 
+    For example serials (this doesn't list PCIe NVME):
+    
+        for d in /dev/sd[a-z] /dev/sd[a-z][a-z]; do
+            if [ ! -e "$d" ]; then
+                continue
+            fi
+            serial=$(smartctl -i "$d" | awk -F": +" '$1 ~ /Serial [Nn]umber/ {print $2}')
+            size=$(smartctl -i "$d" | awk -F": +" '$1 ~ /[Uu]ser [Cc]apacity/ {print $2}')
+            type=$(smartctl -i "$d" | awk -F": +" '$1 ~ /[Rr]otation [Rr]ate/ {print $2}')
+
+            name=$(basename "$d")
+
+            echo "$d | $serial | $type"
+        done
+    
+    For example /dev/disk/by-id/ paths
+        ls -l /dev/disk/by-id/ | grep -vE -- "-part[0-9]"
+
+optionally create GPT partitions for journals and bcache
+    a GPT partition table is required for a shared journal device
+    see comments in bc-ceph-create-osd for specific requirements
+
+then in some way convert those to the format you need to run the commands (manually, via puppet, ansible, chef, etc.) like this for every osd disk:
+    ./bc-ceph-create-osd --journal ${journal} [-d ${osddevice}] [--bcache ${bcachedevice}] ${serial}
+    
+    # for example if I have 6 osds and want 3 osds per PCIe NVMe and 2 per bcache SSD
+    nvme1=/dev/disk/by-id/nvme-examperserial1
+    nvme2=/dev/disk/by-id/nvme-examperserial2
+    bcache1=/dev/disk/by-partlabel/ssd1-bcache
+    bcache2=/dev/disk/by-partlabel/ssd2-bcache
+    ./bc-ceph-create-osd --journal "$nvme1" --bcache "$bcache1" S3RiAl01
+    ./bc-ceph-create-osd --journal "$nvme2" --bcache "$bcache2" S3RiAl02
+    ./bc-ceph-create-osd --journal "$nvme1" --bcache "$bcache1" S3RiAl03
+    ./bc-ceph-create-osd --journal "$nvme2" --bcache "$bcache2" S3RiAl04
+    ./bc-ceph-create-osd --journal "$nvme1" --bcache "$bcache1" S3RiAl05
+    ./bc-ceph-create-osd --journal "$nvme2" --bcache "$bcache2" S3RiAl06
+
+set up the init script that sets disk permissions (an alternative to using udev rules):
+    # systemd systems:
+    cp ceph/init/bc-ceph-init.service /etc/systemd/system/
+    cp ceph/init/bc-ceph-init /usr/local/sbin/
+    systemctl enable bc-ceph-init
+    
+    # other systems:
+    cp ceph/init/bc-ceph-init /etc/init.d/
+
+for Virtual Machines, HWRaid and other special cases:
+    if you don't have unique serial numbers, you can instead give a device, plus a custom serial number (which becomes the label used in GPT partitions and the journal symlink)
+
+    ./bc-ceph-create-osd --journal "$nvme1" --bcache "$bcache1" -d /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_disk1 osd-disk1
+    ./bc-ceph-create-osd --journal "$nvme1" --bcache "$bcache1" -d /dev/sdb osd-disk1
+
+===============================================
+centos 7 bcache
+===============================================
+
+import kernel from fedora / backport kernel
+    rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org
+    rpm -Uvh http://www.elrepo.org/elrepo-release-7.0-2.el7.elrepo.noarch.rpm
+    yum --disablerepo="*" --enablerepo="elrepo-kernel" list available
+
+    yum --disablerepo="*" --enablerepo="elrepo-kernel" install kernel-ml
+    grub2-set-default 0
+
+compile and install bcache-tools (takes only seconds to compile)
+    sudo -k yum install git gcc libblkid libblkid-devel
+
+    git clone https://github.com/g2p/bcache-tools.git
+    cd bcache-tools
+    make
+    sudo cp make-bcache bcache-register bcache-super-show probe-bcache /usr/local/bin/
+
+    # this assumes /usr/local/bin/ is in root's $PATH
+

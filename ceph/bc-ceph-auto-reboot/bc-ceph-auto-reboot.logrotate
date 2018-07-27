@@ -1,0 +1,10 @@
+/var/log/bc-ceph-auto-reboot.log {
+    size 100k
+    missingok
+    rotate 5 
+    compress
+    delaycompress
+    notifempty
+    create 640 syslog adm
+}
+

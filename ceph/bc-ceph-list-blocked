@@ -1,0 +1,74 @@
+#!/bin/bash
+#
+# Scans the log for blocked requests, and tells you the image name for the rbd prefix that is listed in the log, and the number of log lines (not adding request counts) for that rbd image.
+# Run it on a mon, or any node that has a /var/log/ceph/ceph.log
+#
+# Author: Peter Maloney
+
+usage() {
+    echo "Usage: bc-ceph-list-blocked [-p poolname,...] [-d filter_after_date] [logfile [logfile ...]]"
+    echo "default poolname=proxmox, filter_after_date=, logfile=/var/log/ceph/ceph.log"
+    echo "logfile can be plain, gz, or whatever zgrep supports"
+}
+
+pools=(proxmox)
+filter_after_date=
+files=()
+
+while [ "$#" != 0 ]; do
+    if [ "$1" = "-p" ]; then
+        IFS=$','
+        pools=($2)
+        shift
+    elif [ "$1" = "-d" ]; then
+        filter_after_date="$2"
+        shift
+    elif [ "$1" = "-h" -o "$1" = "--help" ]; then
+        usage
+        exit 0
+    else
+        files+=("$1")
+    fi
+    shift
+done
+
+if [ "${#files[@]}" = 0 ]; then
+    files=(/var/log/ceph/ceph.log)
+fi
+
+unset images
+declare -A images
+
+# Generate a lookup table for object prefix to pool/image name
+IFS=$'\n'
+for pool in "${pools[@]}"; do
+    for i in $(rbd ls "$pool"); do
+        prefix=$(rbd info "${pool}/$i" | awk '$1=="block_name_prefix:"{print $2}')
+        images["$prefix"]="${pool}/${i}"
+    done
+done
+
+# parse the log for blocked requests, and output the object prefix and count of lines
+list_slow_prefixes() {
+    local date="$1"
+    if [ -z "$date" ]; then
+        date="."
+    fi
+    zgrep -A999999 "^${date}" "${files[@]}" \
+    | grep "slow request.*rbd_data\." \
+    | sed -r 's|.*(rbd_data\.[a-f0-9]+).*|\1|' \
+    | sort | uniq -c
+}
+
+# use the lookup table to print the name for each line in list_slow_prefixes
+list_slow_images() {
+    for line in $(list_slow_prefixes "${filter_after_date}"); do
+        count=$(awk '{print $1}' <<< "$line")
+        prefix=$(awk '{print $2}' <<< "$line")
+        i="${images["$prefix"]}"
+
+        printf "%-15s %-20s %d\n" "$i" "$prefix" "$count"
+    done | sort -k3,3n
+}
+
+list_slow_images

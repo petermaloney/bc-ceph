@@ -1,0 +1,10 @@
+[unit]
+Description=init-ceph-chown
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bc-ceph-init
+
+[Install]
+WantedBy=multi-user.target
+

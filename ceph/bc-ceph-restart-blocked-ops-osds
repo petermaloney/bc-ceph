@@ -1,0 +1,154 @@
+#!/bin/bash
+#
+# restarts OSDs to try to fix blocked requests
+#
+# TODO: only handle the scrub bug?
+
+# example data
+# 
+#     {
+#         "description": "osd_op(client.6480719.0:2000419292 4.a27969ae rbd_data.46820b238e1f29.000000000000aa70 [set-alloc-hint object_size 524288 write_size 524288,write 0~4096] snapc 16ec0=[16ec0] ack+ondisk+write+known_if_redirected e148441)",
+#         "initiated_at": "2017-09-12 20:04:27.987814",
+#         "age": 49315.666393,
+#         "duration": 49315.668515,
+#         "type_data": [
+#             "delayed",
+#             {
+#                 "client": "client.6480719",
+#                 "tid": 2000419292
+#             },
+#             [
+#                 {
+#                     "time": "2017-09-12 20:04:27.987814",
+#                     "event": "initiated"
+#                 },
+#                 {
+#                     "time": "2017-09-12 20:04:27.987862",
+#                     "event": "queued_for_pg"
+#                 },
+#                 {
+#                     "time": "2017-09-12 20:04:28.004142",
+#                     "event": "reached_pg"
+#                 },
+#                 {
+#                     "time": "2017-09-12 20:04:28.004219",
+#                     "event": "waiting for scrub"
+#                 }
+#             ]
+#         ]
+#     }
+
+
+# outputs 3 lines for osds: total, up, in
+get_osd_counts() {
+    ceph -s --format=json | jq '.osdmap [] .num_osds, .osdmap [] .num_up_osds, .osdmap [] .num_in_osds'
+}
+
+log_verbose() {
+    if [ "$verbose" = true ]; then
+        echo "VERBOSE: $@"
+    fi
+}
+
+dry_run=false
+verbose=false
+while [ "$#" != 0 ]; do
+    if [ "$1" = "-n" -o "$1" = "--dry-run" ]; then
+        dry_run=true
+    elif [ "$1" = "-v" ]; then
+        verbose=true
+    else
+        echo "unrecoqnized arg: $1"
+    fi
+    shift
+done
+
+####### main ######
+
+counts=($(get_osd_counts | tr '\n' ' '))
+up="${counts[1]}"
+in="${counts[2]}"
+
+if [ "$up" != "$in" ]; then
+    echo "Number of up osds does not equal number of in osds... not safe to restart osds."
+    exit 1
+fi
+
+# first of 2 redundant tests
+if ceph health | grep -qE "remapped|peer|degraded|undersized"; then
+    echo "The cluster is recovering... not safe to restart osds."
+    exit 1
+fi
+# second
+if ceph -s --format=json | jq '.pgmap .pgs_by_state [] .state_name' | grep -qv "active+clean"; then
+    echo "The cluster is not all active+clean... not safe to restart osds."
+    exit 1
+fi
+
+
+ret=0
+for osd_number in $(stat -c %n /var/lib/ceph/osd/* | awk -F- '{print $2}' | sort -n); do
+    data=$(ceph daemon "osd.$osd_number" dump_blocked_ops)
+    
+    num_blocked_ops=$(jq .num_blocked_ops <<< "$data")
+    
+    log_verbose "looking at osd $osd_number, num_blocked_ops = $num_blocked_ops"
+    
+    if [ "$num_blocked_ops" != 0 ]; then
+        ret=1
+        
+        max_data=$(jq '.ops | max_by(.duration)' <<< "$data")
+    
+        # integer duration of the max duration blocked op
+        duration=$(jq .duration <<< "$max_data" | awk -F. '{print $1}')
+        isscrub=$(grep -q "waiting for scrub" <<< "$max_data" && echo true || echo false)
+        
+        if [ "$isscrub" != "true" ]; then
+            log_verbose "not a scrub"
+            continue
+        fi
+        if [ "$duration" -lt 300 ]; then
+            log_verbose "not a long duration"
+            continue
+        fi
+        
+        # at this point we know that:
+        # -all in osds are up (or at least not reported down)
+        # -cluster is not doing recovery
+        # -max_data is a scrub op
+        # -the op is older than 5 minutes
+        
+        # we assume:
+        # -restarting any number of osds on this node now, without delay, reusing the old counts but also affecting the new counts, is fine... they are in a separate failure domain
+        
+        # we don't know:
+        # -other nodes are not running this script at the same time, and restarting an osd at the same time
+        #    solution? assume:
+        #                 - whatever problems are caused by restarting osds on 2 nodes is less than the problems of blocked requests on 2 nodes
+        #                 - problems are shown on only one node, so 2 nodes with problems is 2 separate problems (ie. restarting this osd will not fix the other)
+        
+        # so therefore, it is safe to restart an osd, and we want to restart one to fix the scrub bug
+        if [ "$dry_run" = true ]; then
+            echo "restarting osd.$osd_number (DRY RUN)"
+        else
+            echo "restarting osd.$osd_number"
+        fi
+        
+        if which systemctl >/dev/null 2>&1; then
+            if [ "$dry_run" = true ]; then
+                echo "systemctl start \"ceph-osd@${osd_number}\" #(DRY RUN)"
+            else
+                systemctl start "ceph-osd@${osd_number}"
+            fi
+        else
+            # using sysvinit even with upstart
+            if [ "$dry_run" = true ]; then
+                echo "service ceph start \"osd.${osd_number}\" #(DRY RUN)"
+            else
+                service ceph start "osd.${osd_number}"
+            fi
+        fi
+    fi
+done
+
+exit "$ret"

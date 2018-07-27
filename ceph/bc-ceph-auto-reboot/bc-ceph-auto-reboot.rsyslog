@@ -1,0 +1,4 @@
+if      ($programname == 'bc-ceph-auto-reboot') \
+then    -/var/log/bc-ceph-auto-reboot.log
+& ~
+

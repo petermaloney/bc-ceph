@@ -1,0 +1,11 @@
+#!/bin/bash
+
+###########################################################################
+# WARNING: this file is managed by puppet; your changes will be overwritten
+###########################################################################
+
+for n in $(stat -c %n /var/lib/ceph/osd/* | awk -F- '{print $2}' | sort -n); do
+    echo "osd.$n"
+    ceph daemon osd.$n dump_blocked_ops
+    echo
+done

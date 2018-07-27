@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# socket files
+mkdir -p /var/run/ceph
+chown ceph:ceph /var/run/ceph
+
+# logging
+chgrp -R ceph /var/log/ceph
+chmod -R g+w /var/log/ceph
+
+# journals
+for d in /var/lib/ceph/osd/*/journal; do
+    d=$(readlink -f "$d")
+    chown ceph:ceph "$d"
+done
+
+# network buffer size (FIXME: device name hardcoded)
+ethtool -G p5p1 rx 4096 tx 4096
+ethtool -G p5p2 rx 4096 tx 4096
+

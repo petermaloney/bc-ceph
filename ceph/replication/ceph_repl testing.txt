@@ -1,0 +1,95 @@
+"""
+
+# TODO:
+# - test push and pull between 2 separate clusters
+#
+# TODO: skip probably... think about it more: 
+# - send all snapshots in between too, not just the one made now? (too much work I think)
+#
+# TODO: done already? think about it more: 
+# - handle failure during import; we want some data saying that it started or finished, and if it is started and not finished, then rollback and retry previous rather than adding a new snapshot on top
+#     I suspect this is already done...
+#     when sent, ceph makes snapshots for me
+#     when not sent, ceph can still diff from the latest on dest to the new
+#     if it fails while sending, the dest snapshot is gone, so nothing partial is left
+#     if it fails before or after sending, it'll work again next time
+#     if I delete a dest snapshot that was sent (latest or not), it just diffs between other snapshots and still works
+#     if I delete a src snapshot that is the latest on dest, it fails and quits (seems fine...nagios can alert us)
+#     if I delete a src snapshot that was sent but not the latest, it doesn't matter... doesn't use it
+#     if I delete a src snapshot that wasn't sent, it doesn't matter... doesn't use it
+
+# Think of a way to handle failures and keep track of what is sent and what is not
+
+"""
+
+
+
+"""
+
+ some test code
+ 
+    snaptest() { rbd export "$1/${2}@$3" - | sha1sum; }
+    snaptest() { rbd export "backup-ceph-$1/${2}@$3" - | sha1sum; }
+ 
+    snaptestall() {
+        image="$1"
+        if [ -z "$image" ]; then
+            image="rbd/test1"
+        fi
+        
+        for image in "$image" backup-ceph-"$image"; do
+            echo "$image"
+            for snap in $(rbd snap ls "$image" | awk 'NR!=1{print $2}'); do
+                echo -n "$snap "
+                rbd export "${image}@${snap}" -  2>/dev/null | sha1sum
+            done
+        done
+    }
+ 
+    randomwrite() {
+        image="$1"
+        size="$2"
+        
+        if [ -z "$image" ]; then
+            image="rbd/test1"
+        fi
+        if [ -z "$size" ]; then
+            size=30
+        fi
+        
+        rbd map "$image"
+        image_size=$(blockdev --getsize64 /dev/rbd/"$image")
+        limit=$((image_size-size))
+        
+        if [ "$limit" -lt 0 ]; then
+            size="$image_size"
+            seek=0
+        else
+            seek=$RANDOM
+            while true; do
+                if [ "$seek" -lt "$limit" ]; then
+                    break
+                fi
+                seek="${seek:1}"
+            done
+        fi
+        
+        dd if=/dev/urandom of=/dev/rbd/"$image" bs=1M count="$size" seek="$seek" \
+            conv=notrunc iflag=count_bytes oflag=seek_bytes
+            
+        rbd unmap /dev/rbd/"$image"
+    }
+
+    # paste things in from snaptestall, or rbd snap ls <image>
+    # it deletes the snaps in rbd/test1 and backup-ceph-rbd/test1
+    # if snap is not in both, expect and ignore "rbd: failed to remove snapshot: (2) No such file or directory"
+    snapdel() {
+        local IFS=$'\n'
+        for line in $(cat); do
+            snap=$(grep -Eo "replication-[0-9T:-]+" <<< "$line")
+            rbd snap rm "rbd/test1@$snap"
+            rbd snap rm "backup-ceph-rbd/test1@$snap"
+        done
+    }
+    
+"""

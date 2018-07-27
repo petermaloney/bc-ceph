@@ -1,0 +1,4 @@
+Package: ceph ceph-* libcephfs1 librados2 libradosstriper1 librbd1 librgw2 python-cephfs python-rados python-rbd rbd-fuse
+Pin: origin ""
+Pin-Priority: -1
+

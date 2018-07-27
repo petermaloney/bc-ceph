@@ -1,0 +1,36 @@
+#!/bin/bash
+
+# true means list all osds, whether or not they have blocked requests
+all=false
+
+while [ "$#" != 0 ]; do
+    if [ "$1" = "-a" ]; then
+        all=true
+    else
+        echo "unrecoqnized arg: $1"
+    fi
+    shift
+done
+
+# exit code, where 0 means nothing was blocked, and 1 means something was
+ret=0
+for n in $(stat -c %n /var/lib/ceph/osd/* | awk -F- '{print $2}' | sort -n); do
+    data=$(ceph daemon "osd.$n" dump_blocked_ops)
+    
+    if which jq >/dev/null 2>&1; then
+        num_blocked_ops=$(jq .num_blocked_ops <<< "$data")
+    else
+        num_blocked_ops=$(awk -F': ' '$1 ~/\"num_blocked_ops\"/ {print $2}' <<< "$data")
+    fi
+    
+    if [ "$all" = true -o "$num_blocked_ops" != 0 ]; then
+        echo "osd.$n"
+        echo "$data"
+        echo
+    fi
+    if [ "$num_blocked_ops" != 0 ]; then
+        ret=1
+    fi
+done
+
+exit "$ret"
