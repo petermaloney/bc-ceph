@@ -34,7 +34,7 @@ IFS=$'\n'
 snap_data=($(
     ssh ceph1 '
             for image in $(rbd ls proxmox); do
-                for snap in $(rbd snap ls proxmox/"$image" | awk '"'"'NR!=1{print $2}'"'"' | sort -r); do
+                for snap in $(rbd snap ls proxmox/"$image" | awk '"'"'NR!=1 && $2 ~ /^replication-/ {print $2}'"'"' | sort -r); do
                     echo "${image}@${snap}"
                 done
             done

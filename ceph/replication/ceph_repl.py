@@ -17,6 +17,7 @@
 # TODO:
 # a temp clean feature? just scan through image names on src, and for each image on dest, remove temp files
 # a log feature, to a file instead of stdout, and no log for when can't get a lock
+# lz4 for import-diff method
 
 import datetime
 import socket

@@ -7,6 +7,10 @@ ip=$(getent hosts "$hostname" | awk '{print $1}')
 cluster=ceph
 fsid=$(awk '$1 == "fsid" {print $3}' /etc/ceph/ceph.conf)
 
+if [ -z "$ip" ]; then
+    echo "ERROR: could not determine this node's ip address; configure dns or set it in /etc/hosts"
+    exit 1
+fi
 if [ "${ip:0:4}" = "127." ]; then
     echo "ERROR: ip is local... deploy hosts file first"
     exit 1
@@ -20,17 +24,19 @@ tmp=/var/lib/ceph/tmp
 # these paths are overwritten by puppet
 monring2="/etc/ceph/${cluster}.mon.keyring"
 adminring2="/etc/ceph/${cluster}.client.admin.keyring"
+monmap2="/etc/ceph/monmap"
 # these paths are not overwritten by puppet
 adminring="${tmp}/${cluster}.client.admin.keyring"
 monring="${tmp}/${cluster}.mon.keyring"
+monmap="$tmp/monmap"
 
 ceph-authtool --create-keyring "$monring" --gen-key -n mon. --cap mon 'allow *'
 ceph-authtool --create-keyring "$adminring" --gen-key -n client.admin --set-uid=0 --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *'
 ceph-authtool "$monring" --import-keyring "$adminring"
-monmaptool --create --clobber --add "${hostname}" "$ip" --fsid "$fsid" "$tmp"/monmap
+monmaptool --create --clobber --add "${hostname}" "$ip" --fsid "$fsid" "$monmap"
 mkdir -p "/var/lib/ceph/mon/${cluster}-${hostname}"
 
-ceph-mon --mkfs -i "${hostname}" --monmap "$tmp"/monmap --keyring "$monring"
+ceph-mon --mkfs -i "${hostname}" --monmap "$monmap" --keyring "$monring"
 
 touch "/var/lib/ceph/mon/${cluster}-${hostname}/done"
 if which systemctl >/dev/null 2>&1; then
@@ -43,9 +49,11 @@ chown -R ceph:ceph "/var/lib/ceph/mon/${cluster}-${hostname}"
 
 cp "$monring" "$monring2"
 cp "$adminring" "$adminring2"
+cp "$monmap" "$monmap2"
 
 if which systemctl >/dev/null 2>&1; then
     systemctl start "ceph-mon@${hostname}"
+    systemctl enable "ceph-mon@${hostname}"
 else
     service ceph start mon
 fi

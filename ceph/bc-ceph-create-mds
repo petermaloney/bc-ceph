@@ -16,4 +16,9 @@ ceph fs new cephfs cephfs_metadata cephfs_data
 
 chown -R ceph:ceph "/var/lib/ceph/mds/${cluster}-${hostname}"
 
-service ceph start mds
+if which systemctl >/dev/null 2>&1; then
+    systemctl start "ceph-mds@${hostname}"
+    systemctl enable "ceph-mds@${hostname}"
+else
+    service ceph start mds
+fi

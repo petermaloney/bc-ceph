@@ -401,8 +401,11 @@ if __name__ == "__main__":
     parser.add_argument('--dry-run', '-n', dest='dry_run', action='store_const',
                     const=True, default=False,
                     help='no action, only print what would be done')
-    parser.add_argument('-s', dest='spec', action='store_const',
-                    const=True, default="7,4,6",
+    parser.add_argument('--no-lock', action='store_const',
+                    const=True, default=False,
+                    help='disable locking, which means multiple instances can run at the same time (recommended only for testing or dry run)')
+    parser.add_argument('-s', '--spec', action='store', 
+                    default="7,4,6",
                     help='comma separated daily, weekly, monthly counts to keep (default 7,4,6).')
     parser.add_argument('image_paths', metavar='image_paths', type=str, nargs='+',
                     help='rbd image paths(s) to clean up, eg. rbd/vm-101-disk1, or pool name(s) with trailing slash, eg. rbd/')
@@ -413,14 +416,17 @@ if __name__ == "__main__":
     got_lock = False
     lockFile = "/var/run/ceph_repl.lock"
     try:
-        with open(lockFile, "wb") as f:
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                got_lock = True
-            except: # python3.4.x has BlockingIOError here, but python 3.2.x has IOError here... so just don't use those class names
-                print("Could not obtain lock; another process already running? quitting")
-                exit(1)
+        if args.no_lock:
             run(spec)
+        else:
+            with open(lockFile, "wb") as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    got_lock = True
+                except: # python3.4.x has BlockingIOError here, but python 3.2.x has IOError here... so just don't use those class names
+                    print("Could not obtain lock; another process already running? quitting")
+                    exit(1)
+                run(spec)
     finally:
         if got_lock:
             os.remove(lockFile)

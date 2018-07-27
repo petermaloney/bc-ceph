@@ -2,20 +2,34 @@
 #
 # Licensed GNU GPLv2; if you did not recieve a copy of the license, get one at http://www.gnu.org/licenses/gpl-2.0.html
 
+# OSD device:
+# ===========
 # The osd device will be wiped and all data destroyed.
-# The journal device is handled with more care, and will only create partitions.
-# The partition table will be created if the journal is colocated, but is required to exist already for separate journals.
-# The partition for the separate journal and bcache does not need to exist, and will be created.
-# The bcache and journal device you specify are not the partition but the device with the partition table.
 # The osd device is expected to be a whole disk.
 # If you use a serial, make sure it's unique as seen by smartctl or it will break something. Use -d to override the osddevice and set a custom serial if they aren't unique.
+#
+# Journal device:
+# ===========
+# The journal device is handled with more care, and will only create partitions.
+# The partition table will be created if the journal is colocated, but is required to exist already for separate journals.
+# The partition for the separate journal must not exist, and will be created.
+# The journal device you specify is not the partition but the device with the partition table.
+#
+# Bluestore wal and db:
+# ====================
+# Currently hardcoded sizes... just for testing purposes.
+# Specify the device by setting --journal.
+#
+# Bcache device:
+# ===========
+# The partition for the bcache cache device must already exist, and either be specified exactly, eg. /dev/sda3 or /dev/disk/by-partlabel/mybcache, or you can specify the device with a GPT partition table, and it will look for a partition with a label ending with "-bcache" or "_bcache"
 
 ########################
 # CLI Handling
 ########################
 
 usage() {
-    echo "$0 [--store {xfs|ext4|btrfs|bluestore}] [-w <weight>] [-j <size>] [-c <cluster>] [-d <osddevice>] [--bcache <cache_device>] [--no-start] [--journal <journal-device>] <serial>"
+    echo "$0 [--store {xfs|ext4|btrfs|bluestore}] [-w <weight>] [-j <size>] [--db-size <size>] [--wal-size <size>] [-c <cluster>] [-d <osddevice>] [--bcache <cache_device>] [--no-start] [--journal <journal-device>] <serial>"
     
     # TODO: currently --journal specifies the device for wal and db for bluestore. Separate wal and db block device and size --wal --db --wal-size --db-size
 }
@@ -24,6 +38,12 @@ weight=
 # journals are supposed to be something like 1GiB, but let's just make some extra... the ssd is too huge anyway and this is still nothing
 # this is GiB, not GB
 journal_size=16G
+
+# defaults come from http://www.spinics.net/lists/ceph-devel/msg29861.html and https://github.com/ceph/cbt/blob/master/example/bluestore/mkpart_hdd_nvme_bs.sh
+# added +2 to db_size though... maybe an error (includes wal?) or I forget which link might have suggested it
+db_size=10G
+wal_size=2G
+
 cluster=ceph
 
 # This is the whole device given for the OSD. If the journal is colocated, this will be partitioned.
@@ -39,9 +59,29 @@ start=1
 colocated=false
 store=xfs
 
+validate_size() {
+    local name="$1"
+    local size="$2"
+    # numbers, then optional decimal plus more numbers, then either G or M 
+    # what works as a unit dependson what sgdisk supports...so I'll support only what I know works
+    if ! grep -E "^[0-9]+[GM]$" <<< "$size"; then
+        echo "ERROR: ${name} \"$size\" is invalid; you must have only a whole number and a unit without spaces, eg. 1G or 900M"
+        exit 1
+    fi
+}
+
 while [ "$#" != 0 ]; do
     if [ "$1" = "-j" ]; then
         journal_size="$2"
+        validate_size "journal size" "$journal_size"
+        shift
+    elif [ "$1" = "--db-size" ]; then
+        db_size="$2"
+        validate_size "db size" "$db_size"
+        shift
+    elif [ "$1" = "--wal-size" ]; then
+        wal_size="$2"
+        validate_size "wal size" "$wal_size"
         shift
     elif [ "$1" = "-w" ]; then
         weight="$2"
@@ -63,6 +103,9 @@ while [ "$#" != 0 ]; do
     elif [ "$1" = "--store" ]; then
         store="$2"
         shift
+    elif [ "$1" = "--help" ]; then
+        usage
+        exit 1
     else
         args+=("$1")
     fi
@@ -106,9 +149,12 @@ journal=
 check_deps() {
     abort=false
     
-    cmds=(sgdisk smartctl parted mkfs.xfs diff awk ceph ceph-osd bc)
+    cmds=(sgdisk parted mkfs.xfs diff awk ceph ceph-osd bc)
     if [ -n "$bcache" ]; then
         cmds+=(bcache-super-show make-bcache)
+    fi
+    if [ -z "$whole_osddevice" ]; then
+        cmds+=(smartctl)
     fi
     for cmd in "${cmds[@]}"; do
         if ! which "${cmd}" >/dev/null 2>&1; then
@@ -163,6 +209,7 @@ make_bcache() {
     # attach cache
     cache_found=
     
+    # TODO: also accept serial of the bcache device, but then we require it is a partition table
     csetuuid=$(bcache-super-show "$bcache_cache" 2>/dev/null | awk '$1 == "cset.uuid" {print $2}')
     table=$(parted -s "$bcache_cache" print 2>/dev/null | awk -F": " '$1 == "Partition Table"{print $2}')
     if [ -n "$csetuuid" ]; then
@@ -223,6 +270,22 @@ find_by_serial() {
     done
 
     echo "$device"
+}
+
+wait_for_exists() {
+    local device="$1"
+    # wait for the partition to appear... 
+    local sleep_limit=30
+    local sleep_count=0
+    while [ ! -e "$device" ]; do
+        echo "waiting for device $device"
+        sleep 1
+        let sleep_count++
+        if [ "$sleep_count" -ge "$sleep_limit" ]; then
+            echo "ERROR: waited too long... giving up"
+            exit 1
+        fi
+    done
 }
 
 # Creates a partition table and the partitions needed for both the osd data filesystem and the osd's journal on the same device.
@@ -316,7 +379,7 @@ create_partition() {
     fi
     
     if [ -z "$start" ]; then
-        d=$(diff -u0 <(echo "$old" | awk '$1 ~ /^[0-9]$/') <(echo "$new" | awk '$1 ~ /^[0-9]$/') | tail -n1)
+        d=$(diff -u0 <(echo "$old" | awk '$1 ~ /^[0-9]+$/') <(echo "$new" | awk '$1 ~ /^[0-9]+$/') | tail -n1)
         if ! grep -qE "\+[ ]+[0-9]+[ ]+[0-9]+[ ]+[0-9]+[ ]+$(grep -Eo '[0-9]+'<<< "$size")" <<< "$d"; then
             echo "ERROR: the sgdisk name workaround failed... giving up. The diff between old and new partition table:" >&2
             echo "$d" >&2
@@ -328,7 +391,7 @@ create_partition() {
     
     err=$(parted -s "$device" mkpart "$name" "$start"s "$end"s 2>&1)
     if [ "$?" != 0 ]; then
-        echo "ERROR: creating a partition on \"$device\" failed. Is there a GPT partition table?" >&2
+        echo "ERROR: creating a partition on \"$device\" failed. Is there a GPT partition table and enough free space?" >&2
         echo "$err" >&2
         return 1
     fi
@@ -349,6 +412,10 @@ create_journal_separate() {
     fi
     
     create_partition "$whole_journal" "$journal_size" "$name"
+    if [ "$?" != 0 ]; then
+        echo "ERROR: failed to create partition" >&2
+        return 1
+    fi
     
     while [ ! -e "$path" ]; do
         sleep 1
@@ -392,13 +459,17 @@ ddd0() {
             echo "ERROR: device \"$device\" does not exist"
             return 1
         fi
-        if [ ! -L "$device" -a ! -b "$device" -a ! -c "$devie" ]; then
+        if [ ! -L "$device" -a ! -b "$device" -a ! -c "$device" ]; then
             echo "ERROR: device \"$device\" is not a link or a special file"
             return 1
         fi
         s=$(blockdev --getsize64 "$device")
-        dd if=/dev/zero of="$device" bs=1M count=10 >/dev/null 2>&1 | grep -vE "records|copied|No space left" >&2
-        dd if=/dev/zero of="$device" bs=1M seek=$((s-10485760)) oflag=seek_bytes 2>&1 | grep -vE "records|copied|No space left" >&2
+        if [ "$s" -lt "20971520" ]; then
+            dd if=/dev/zero of="$device" bs=1M >/dev/null 2>&1 | grep -vE "records|copied|No space left" >&2
+        else
+            dd if=/dev/zero of="$device" bs=1M count=10 >/dev/null 2>&1 | grep -vE "records|copied|No space left" >&2
+            dd if=/dev/zero of="$device" bs=1M seek=$((s-10485760)) oflag=seek_bytes 2>&1 | grep -vE "records|copied|No space left" >&2
+        fi
     done
 }
 
@@ -413,12 +484,16 @@ fail() {
 
 check_deps
 
+if ! whoami | grep -q "^root$"; then
+    echo "ERROR: this script must run as root"
+    exit 1
+fi
 
 if [ -z "$whole_osddevice" ]; then
     whole_osddevice=$(find_by_serial "$serial")
 fi
 if [ -z "$whole_osddevice" ]; then
-    fail "couldn't find serial for osd device \"$whole_osddevice\""
+    fail "couldn't find osd device... serial = \"$serial\", whole_osddevice = \"$whole_osddevice\""
 fi
 if [ ! -e "$whole_osddevice" ]; then
     fail "couldn't find osd device \"$whole_osddevice\""
@@ -436,15 +511,22 @@ if [ "$store" = "bluestore" ]; then
     # right now it doesn't do separate journal and puts db and wal on that device, and it hardcodes some small sizes
     parted -s "$whole_osddevice" mktable gpt
     echo "Creating data partition"
-    create_partition "$whole_osddevice" 100MB "data_${serial}"
+    create_partition "$whole_osddevice" 100MB "data_${serial}" || exit 1
     echo "Creating block partition"
-    create_partition "$whole_osddevice" "" "block_${serial}"
+    create_partition "$whole_osddevice" "" "block_${serial}" || exit 1
     
     if [ "$colocated" = false ]; then
         echo "Creating block.db partition"
-        create_partition "$whole_journal" 3G "block.db_${serial}"
+        create_partition "$whole_journal" "$db_size" "block.db_${serial}" || exit 1
+        
+        wait_for_exists "/dev/disk/by-partlabel/block.db_${serial}"
+        ddd0 "/dev/disk/by-partlabel/block.db_${serial}"
+        
         echo "Creating block.wal partition"
-        create_partition "$whole_journal" 1G "block.wal_${serial}"
+        create_partition "$whole_journal" "$wal_size" "block.wal_${serial}" || exit 1
+        
+        ddd0 "/dev/disk/by-partlabel/block.wal_${serial}"
+        wait_for_exists "/dev/disk/by-partlabel/block.wal_${serial}"
     fi
     
     osddevice="/dev/disk/by-partlabel/data_${serial}"
@@ -467,10 +549,16 @@ else
     if [ $? != 0 ]; then
         fail "failed to create journal"
     fi
+    wait_for_exists "$journal"
     if [ -z "$journal" -o ! -e "$journal" -o ! -L "$journal" ]; then
         fail "failed to get journal path... result = \"$journal\""
     fi
 fi
+
+wait_for_exists "$osddevice"
+wait_for_exists "$osd_block"
+wait_for_exists "$osd_data"
+
 if [ -z "$osddevice" -o ! -e "$osddevice" ]; then
     fail "failed to get data device path... result = \"$osddevice\""
 fi
@@ -563,8 +651,6 @@ mount "/var/lib/ceph/osd/${cluster}-${osd_number}" || fail "couldn't mount osd d
 
 if [ "$store" = "bluestore" ]; then
     if [ -n "$bcache_backing" ]; then
-        echo "WARNING: hardcoding bcache device name here"
-        # FIXME: how do I get a unique identifier here, instead of /dev/bcacheX?
         ln -s "$osd_block" "/var/lib/ceph/osd/${cluster}-${osd_number}/block"
     else
         ln -s "/dev/disk/by-partlabel/block_${serial}" "/var/lib/ceph/osd/${cluster}-${osd_number}/block"
@@ -618,6 +704,7 @@ fi
 if [ "$start" = 1 ]; then
     if which systemctl >/dev/null 2>&1; then
         systemctl start "ceph-osd@${osd_number}"
+        systemctl enable "ceph-osd@${osd_number}"
     else
         # using sysvinit even with upstart
         service ceph start "osd.${osd_number}"

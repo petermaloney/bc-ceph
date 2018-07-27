@@ -9,7 +9,7 @@ ip=$(getent hosts "$hostname" | awk '{print $1}')
 
 check_files() {
     # TODO: to support multiple clusters, the monmap file also needs the cluster name prefixed
-    files_required=("/etc/ceph/${cluster}.conf", "/etc/ceph/${cluster}.client.admin.keyring", "/etc/ceph/${cluster}.mon.keyring", "/etc/ceph/monmap") 
+    files_required=("/etc/ceph/${cluster}.conf" "/etc/ceph/${cluster}.client.admin.keyring" "/etc/ceph/${cluster}.mon.keyring" "/etc/ceph/monmap") 
     file_missing=false
     for f in "${files_required[@]}"; do
         if [ ! -e "$f" ]; then
@@ -40,6 +40,7 @@ chown -R ceph:ceph "/var/lib/ceph/mon/${cluster}-${hostname}"
 # start the mon before adding to monmap, or bad things happen until you fix it (basically any ceph command fails)
 if which systemctl >/dev/null 2>&1; then
     systemctl start "ceph-mon@${hostname}"
+    systemctl enable "ceph-mon@${hostname}"
 else
     service ceph start mon
 fi
