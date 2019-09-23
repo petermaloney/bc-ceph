@@ -9,6 +9,11 @@
 #    # make it so ceph won't move data, only let you change weight and then it will peer
 #    ceph osd set norecover
 #
+#    # Luminous and newer - if you have device classes, you must specify a class:
+#    # for example:
+#    #     ./bc-ceph-reweight-by-utilization.py -al --device-class "hdd"
+#    # and repeat that for each class you want to reweight
+#
 #    # run the script until it's balanced, and then ctrl+c. This will run peering, which has (I believe very small) potential performance impact.
 #    # if you have PGs that are too large, or OSDs that are too small, or some other condition, it might never finish with the default goals.
 #    # To use a non-default goal, either end early, or set -o higher (default 1.03), for example -o 1.06.
@@ -267,6 +272,18 @@ class Pool:
     def is_erasure(self):
         return self.type == 3
 
+    # this is the number of bytes used up on an osd when the pg is there
+    # for replication it's just the same as the normal number of bytes
+    def get_osd_bytes(self, num_bytes):
+        if self.is_erasure():
+            # TODO: test: 
+            # for EC, don't just add num_bytes, but num_bytes/k, and k shows up as min_size in the pool list
+            return num_bytes / self.min_size
+        elif self.is_replicated():
+            return num_bytes
+        else:
+            raise Exception("Unsupported pool type: %s" % self.type)
+
     def __str__(self):
         
         return "pool %s %s %s %s" % (self.pool_id, type(self.pool_id), self.pool_name, self.type)
@@ -296,20 +313,40 @@ def refresh_pools():
     
 def refresh_weight():
     global osds
-    
+
+    # for the safety check, to make sure that you specify --device-class if you have more than one class; this only populates if you did not use --device-class
+    classes_seen = []
+
     for row in ceph_osd_df()["nodes"]:
         osd_id = row["id"]
         
+        # limit the result to the list specified on command line
+        if args.include_osds and osd_id not in args.include_osds:
+            if osd_id in osds.keys():
+                del osds[osd_id]
+            continue
+        
+        # limit the result to the class specified on command line
+        if args.device_class:
+            if "device_class" in row.keys():
+                device_class = row["device_class"]
+                if device_class != args.device_class:
+                    if osd_id in osds.keys():
+                        del osds[osd_id]
+                    continue
+            else:
+                raise Exception("You have used the --device-class argument, but your ceph version doesn't seem to support device classes (ceph osd df does not have a \"device_class\" field).")
+        else:
+            if "device_class" in row.keys():
+                device_class = row["device_class"]
+                if not device_class in classes_seen:
+                    classes_seen += [device_class]
+
         if osd_id in osds:
             osd = osds[osd_id]
         else:
             osd = Osd(osd_id)
             osds[osd_id] = osd
-        
-        # limit the result to the list specified on command line
-        if args.include_osds and osd_id not in args.include_osds:
-            del osds[osd_id]
-            continue
         
         osd.weight = row["crush_weight"]
         if osd.weight == 0:
@@ -336,8 +373,11 @@ def refresh_weight():
         osd.df_var = row["var"]
 
     if len(osds) == 0:
-        raise Exception("No osds were selected. Check your --include-osds and ceph df output to see if any are valid.")
-    
+        raise Exception("No osds were selected. Check your --include-osds and --device-class arguments, and ceph df output to see if any are valid.")
+    if len(classes_seen) > 1:
+        raise Exception("You have multiple device classes, but you did not specify one.")
+
+
 def refresh_bytes():
     global osds
     
@@ -378,14 +418,7 @@ def refresh_bytes():
             if not osd.bytes_old:
                 osd.bytes_old = 0
 
-            if pool.is_erasure():
-                # TODO: test: 
-                # for EC, don't just add num_bytes, but num_bytes/k, and k shows up as min_size in the pool list
-                osd.bytes_old += num_bytes / pool.min_size
-            elif pool.is_replicated():
-                osd.bytes_old += num_bytes
-            else:
-                raise Exception("Unsupported pool type: %s" % pool.type)
+            osd.bytes_old += pool.get_osd_bytes(num_bytes)
 
             osd.pgs_old += 1
 
@@ -648,6 +681,8 @@ if __name__ == "__main__":
                     help='scale sizes by SIZE (default 1) before printing them, eg. --block-size=1MB or --block-size=1000000 would print it in megabytes')
     parser.add_argument('--include-osds', action='store', default=None, type=str,
                     help='optional comma separated list of osds to work with, default is equivalent to all non-0 weight osds (report, calculations, adjustment, backup, restore)')
+    parser.add_argument('--device-class', action='store', default=None, type=str,
+                    help='optional device class to work with')
     
     parser.add_argument('-a', '--adjust', action='store_const', const=True, default=False,
                     help='adjust the reweight (default is report only)')
