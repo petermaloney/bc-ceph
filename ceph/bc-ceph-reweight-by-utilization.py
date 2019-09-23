@@ -193,7 +193,14 @@ def ceph_pg_dump():
     out, err = p.communicate()
     if( p.returncode == 0 ):
         try:
-            return json.loads(out.decode("UTF-8"))["pg_stats"]
+            s = json.loads(out.decode("UTF-8"))
+            if "pg_stats" in s:
+                return s["pg_stats"]
+            elif "pg_map" in s:
+                # nautilis and newer
+                return s["pg_map"]["pg_stats"]
+            else:
+                raise Exception("pg dump format not supported")
         except ValueError as e:
             raise JsonValueError(e)
     else:
